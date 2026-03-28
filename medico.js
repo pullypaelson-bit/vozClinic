@@ -24,7 +24,30 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   atualizarTopbar('Agenda de hoje');
   await showMedPage('agenda');
+
+  // Verificar notificações do médico a cada 30s
+  verificarNotificacoesMedico();
+  setInterval(verificarNotificacoesMedico, 30000);
 });
+
+async function verificarNotificacoesMedico() {
+  try {
+    const notifs = await API.get('/notificacoes');
+    // Filtrar notificações relevantes para este médico
+    const minhas = notifs.filter(n =>
+      !n.lida && (
+        n.medicoNome === MEU_MEDICO?.nome ||
+        n.tipo === 'folga'
+      )
+    );
+    // Mostrar toast para novas notificações de folga registada pelo admin
+    const folgasNovas = minhas.filter(n => n.tipo === 'folga' && !n._visto);
+    folgasNovas.forEach(n => {
+      toast('Administração registou folga na tua agenda. Verifica em "As minhas folgas".', 'warning');
+      n._visto = true;
+    });
+  } catch {}
+}
 
 function atualizarTopbar(titulo) {
   document.getElementById('tb-med-title').textContent = titulo;
@@ -243,16 +266,38 @@ async function criarMarcacao() {
 }
 
 // Preenche select de horas ao escolher data
-document.getElementById('nm-data')?.addEventListener('change', async function() {
+async function carregarHorasDisponiveis(dataVal) {
   const sel = document.getElementById('nm-hora');
+  if (!sel || !dataVal) return;
+  sel.innerHTML = '<option>A carregar...</option>';
   try {
-    const ag = await API.get(`/medicos/${MEU_MEDICO.id}/agenda?data=${this.value}`);
+    const medicoId = MEU_MEDICO?.id;
+    if (!medicoId) throw new Error('sem medico');
+    const ag = await API.get(`/medicos/${medicoId}/agenda?data=${dataVal}`);
     const livres = (ag.slots||[]).filter(s=>s.estado==='livre');
-    sel.innerHTML = livres.map(s=>`<option>${s.hora}</option>`).join('');
-    if (!livres.length) sel.innerHTML = '<option>Sem vagas neste dia</option>';
+    if (livres.length) {
+      sel.innerHTML = livres.map(s=>`<option value="${s.hora}">${s.hora}</option>`).join('');
+    } else {
+      sel.innerHTML = '<option value="">Sem vagas neste dia</option>';
+    }
   } catch {
-    sel.innerHTML = ['09:00','09:30','10:00','10:30','11:00','14:00','14:30','15:00'].map(h=>`<option>${h}</option>`).join('');
+    sel.innerHTML = ['09:00','09:30','10:00','10:30','11:00','14:00','14:30','15:00'].map(h=>`<option value="${h}">${h}</option>`).join('');
   }
+}
+
+// Abre modal de nova marcação e pré-carrega data+horas de hoje
+function abrirNovaMarcacao() {
+  const hoje = today();
+  const nmData = document.getElementById('nm-data');
+  if (nmData) { nmData.value = hoje; nmData.min = hoje; }
+  document.getElementById('nm-hora').innerHTML = '<option>A carregar...</option>';
+  openModal('modal-nova-marcacao');
+  carregarHorasDisponiveis(hoje);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const nmData = document.getElementById('nm-data');
+  if (nmData) nmData.addEventListener('change', function() { carregarHorasDisponiveis(this.value); });
 });
 
 // ── FOLGA ─────────────────────────────────────────────────────────────────────
