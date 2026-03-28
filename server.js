@@ -349,7 +349,7 @@ app.post("/api/campanha/iniciar", requireAuth(["admin"]), async (req, res) => {
 });
 
 // ── Frontend estático ─────────────────────────────────────────────────────────
-const FRONTEND = path.join(__dirname, const FRONTEND = __dirname;);
+const FRONTEND = __dirname;
 app.use(express.static(FRONTEND));
 app.get("/medico", (req, res) => res.sendFile(path.join(FRONTEND, "medico.html")));
 app.get("/login", (req, res) => res.sendFile(path.join(FRONTEND, "login.html")));
