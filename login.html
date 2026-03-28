@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VozClinic — Acesso</title>
+<link rel="stylesheet" href="css/main.css">
+<style>
+  body { display:flex; align-items:center; justify-content:center; min-height:100vh; background:var(--bg-tertiary); }
+  .login-wrap { width:100%; max-width:380px; padding:1rem; }
+  .login-card { background:var(--bg-primary); border:0.5px solid var(--border); border-radius:16px; padding:2rem; }
+  .logo-row { text-align:center; margin-bottom:1.75rem; }
+  .logo-mark { display:inline-flex; align-items:center; justify-content:center; width:48px; height:48px; background:#E6F1FB; border-radius:12px; margin-bottom:.75rem; }
+  .logo-mark svg { width:24px; height:24px; }
+  .logo-name { font-size:20px; font-weight:600; color:var(--text-primary); display:block; }
+  .logo-sub { font-size:12px; color:var(--text-secondary); display:block; margin-top:2px; }
+  .role-tabs { display:flex; gap:4px; background:var(--bg-secondary); border-radius:10px; padding:3px; margin-bottom:1.25rem; }
+  .role-tab { flex:1; text-align:center; padding:7px; font-size:12px; font-weight:500; border-radius:8px; cursor:pointer; color:var(--text-secondary); border:none; background:none; font-family:inherit; transition:.15s; }
+  .role-tab.active { background:var(--bg-primary); color:var(--text-primary); box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  .field { margin-bottom:1rem; }
+  .field label { display:block; font-size:12px; color:var(--text-secondary); margin-bottom:5px; }
+  .field input { width:100%; padding:9px 12px; border:0.5px solid var(--border); border-radius:8px; font-size:14px; background:var(--bg-secondary); color:var(--text-primary); font-family:inherit; outline:none; transition:.15s; }
+  .field input:focus { border-color:#378ADD; background:var(--bg-primary); }
+  .btn-login { width:100%; padding:10px; background:#378ADD; color:#fff; border:none; border-radius:8px; font-size:14px; font-weight:500; cursor:pointer; font-family:inherit; margin-top:.25rem; transition:.15s; }
+  .btn-login:hover { background:#185FA5; }
+  .login-note { font-size:11px; color:var(--text-tertiary); text-align:center; margin-top:1rem; }
+  .error-msg { background:#FCEBEB; color:#A32D2D; border:0.5px solid #F09595; border-radius:8px; padding:8px 12px; font-size:12px; margin-bottom:1rem; display:none; }
+</style>
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="logo-row">
+      <div class="logo-mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#378ADD" stroke-width="2" stroke-linecap="round">
+          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>
+          <path d="M8 12h8M12 8v8"/>
+        </svg>
+      </div>
+      <span class="logo-name">VozClinic</span>
+      <span class="logo-sub">Clínica DentalStar · Felgueiras</span>
+    </div>
+
+    <div class="role-tabs">
+      <button class="role-tab active" onclick="setRole('admin',this)">Administração</button>
+      <button class="role-tab" onclick="setRole('medico',this)">Médico</button>
+    </div>
+
+    <div class="error-msg" id="error-msg">Email ou palavra-passe incorretos.</div>
+
+    <div class="field">
+      <label>Email</label>
+      <input type="email" id="email" placeholder="nome@dentalstar.pt" autocomplete="username">
+    </div>
+    <div class="field">
+      <label>Palavra-passe</label>
+      <input type="password" id="senha" placeholder="••••••••" autocomplete="current-password">
+    </div>
+
+    <button class="btn-login" onclick="login()">Entrar</button>
+    <p class="login-note">Acesso restrito a colaboradores da clínica.</p>
+  </div>
+</div>
+
+<script>
+let currentRole = 'admin';
+function setRole(r, el) {
+  currentRole = r;
+  document.querySelectorAll('.role-tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+}
+
+async function login() {
+  const email = document.getElementById('email').value.trim();
+  const senha = document.getElementById('senha').value;
+  const err = document.getElementById('error-msg');
+  err.style.display = 'none';
+
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ email, senha, role: currentRole })
+    });
+    const data = await res.json();
+    if (!res.ok) { err.style.display='block'; return; }
+
+    localStorage.setItem('vc_token', data.token);
+    localStorage.setItem('vc_user', JSON.stringify(data.user));
+
+    if (data.user.role === 'admin') window.location.href = '/';
+    else window.location.href = '/medico.html';
+  } catch(e) {
+    err.style.display = 'block';
+    err.textContent = 'Erro de ligação ao servidor.';
+  }
+}
+
+document.addEventListener('keydown', e => { if(e.key==='Enter') login(); });
+// Demo rápido (remove em produção)
+document.getElementById('email').value = 'admin@dentalstar.pt';
+document.getElementById('senha').value = 'demo1234';
+</script>
+</body>
+</html>

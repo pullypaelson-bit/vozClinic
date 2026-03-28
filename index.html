@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VozClinic — Administração</title>
+<link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div style="display:flex;align-items:center;gap:7px;margin-bottom:3px">
+        <span class="live-dot"></span>
+        <span class="name">VozClinic</span>
+      </div>
+      <div class="sub">DentalStar · Felgueiras</div>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-label">Geral</div>
+      <div class="nav-item active" onclick="showPage('dashboard',this)"><span class="icon">◉</span><span>Dashboard</span></div>
+      <div class="nav-item" onclick="showPage('chamadas',this)"><span class="icon">◎</span><span>Chamadas IA</span></div>
+      <div class="nav-item" onclick="showPage('campanhas',this)"><span class="icon">◈</span><span>Campanhas SMS</span></div>
+      <div class="nav-item" onclick="showPage('sms',this)"><span class="icon">✉</span><span>SMS automáticos</span></div>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-label">Médicos</div>
+      <div id="nav-medicos"></div>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-label">Gestão</div>
+      <div class="nav-item" onclick="showPage('folgas',this)"><span class="icon">◷</span><span>Folgas</span></div>
+      <div class="nav-item" onclick="showPage('notificacoes',this)"><span class="icon">◔</span><span>Notificações <span id="notif-count" class="badge badge-danger" style="font-size:10px;display:none">0</span></span></div>
+      <div class="nav-item" onclick="openModal('modal-novo-medico')"><span class="icon">+</span><span>Novo médico</span></div>
+      <div class="nav-item" onclick="showPage('config',this)"><span class="icon">◳</span><span>Configuração</span></div>
+    </div>
+
+    <div class="sidebar-footer">
+      <div style="display:flex;align-items:center;gap:8px">
+        <div class="avatar" style="background:var(--bg-secondary);color:var(--text-secondary)">AD</div>
+        <div><div class="user-name">Administração</div><div class="user-role">DentalStar</div></div>
+      </div>
+      <div class="btn-logout" onclick="logout()">← Sair</div>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <div class="main">
+    <div class="topbar">
+      <div class="topbar-left">
+        <div id="tb-avatar" class="avatar" style="background:var(--bg-secondary);color:var(--text-secondary)">AD</div>
+        <div><div class="topbar-title" id="tb-title">Dashboard</div><div class="topbar-sub" id="tb-sub" id="tb-sub"></div></div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span class="badge badge-success" id="tb-badge">IA ativa</span>
+        <button class="btn btn-sm btn-primary" onclick="openModal('modal-novo-medico')">+ Médico</button>
+        <button class="btn btn-sm" onclick="openModal('modal-campanha')">Campanha SMS</button>
+      </div>
+    </div>
+
+    <div class="content" id="main-content">
+      <!-- páginas injetadas via JS -->
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Novo médico ── -->
+<div class="modal-overlay" id="modal-novo-medico">
+  <div class="modal-box">
+    <div class="modal-hd">
+      <span class="modal-title">Adicionar médico</span>
+      <button class="modal-close" onclick="closeModal('modal-novo-medico')">✕</button>
+    </div>
+    <div class="form-grid-2">
+      <div class="form-group"><label class="form-label">Nome completo</label><input class="form-input" id="nm-nome" placeholder="Dr. João Silva"></div>
+      <div class="form-group"><label class="form-label">Especialidade</label><input class="form-input" id="nm-esp" placeholder="Ortodontia"></div>
+    </div>
+    <div class="form-grid-2">
+      <div class="form-group"><label class="form-label">Email (login)</label><input class="form-input" id="nm-email" type="email" placeholder="joao@dentalstar.pt"></div>
+      <div class="form-group"><label class="form-label">Palavra-passe inicial</label><input class="form-input" id="nm-senha" type="password" placeholder="Mín. 8 caracteres"></div>
+    </div>
+    <div class="form-grid-2">
+      <div class="form-group"><label class="form-label">Iniciais (avatar)</label><input class="form-input" id="nm-iniciais" maxlength="2" placeholder="JS"></div>
+      <div class="form-group"><label class="form-label">Cor do avatar</label>
+        <select class="form-select" id="nm-cor">
+          <option value="blue">Azul</option><option value="green">Verde</option>
+          <option value="amber">Âmbar</option><option value="pink">Rosa</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group"><label class="form-label">Horário de trabalho</label>
+      <select class="form-select" id="nm-horario">
+        <option>Segunda a Sexta, 09:00–18:00</option>
+        <option>Segunda a Sexta, 09:00–13:00</option>
+        <option>Segunda, Quarta e Sexta</option>
+        <option>Terça e Quinta</option>
+      </select>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-novo-medico')">Cancelar</button>
+      <button class="btn btn-primary" onclick="criarMedico()">Criar conta</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Campanha SMS ── -->
+<div class="modal-overlay" id="modal-campanha">
+  <div class="modal-box">
+    <div class="modal-hd">
+      <span class="modal-title">Nova campanha SMS / Chamada</span>
+      <button class="modal-close" onclick="closeModal('modal-campanha')">✕</button>
+    </div>
+    <div class="form-group"><label class="form-label">Médico (opcional)</label>
+      <select class="form-select" id="camp-medico"><option value="">Todos os médicos</option></select>
+    </div>
+    <div class="form-group"><label class="form-label">Promoção / mensagem</label>
+      <input class="form-input" id="camp-promo" placeholder="Higiene oral com 30% de desconto esta semana"></div>
+    <div class="form-group"><label class="form-label">Tipo</label>
+      <select class="form-select" id="camp-tipo">
+        <option value="chamada">Chamada com IA (voz)</option>
+        <option value="sms">Apenas SMS</option>
+        <option value="ambos">SMS + Chamada de follow-up</option>
+      </select>
+    </div>
+    <div class="form-group"><label class="form-label">Idioma da campanha</label>
+      <select class="form-select" id="camp-idioma">
+        <option value="pt">Português (PT-PT)</option>
+        <option value="en">English</option>
+        <option value="es">Español</option>
+        <option value="fr">Français</option>
+      </select>
+    </div>
+    <div class="form-group"><label class="form-label">Pré-visualização SMS</label>
+      <div class="sms-preview" id="camp-preview">DentalStar: Olá! Temos uma promoção especial em <b>higiene oral com 30% de desconto</b> esta semana. Quer marcar? Responda SIM para confirmar ou ligue 255000000.</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-campanha')">Cancelar</button>
+      <button class="btn btn-primary" onclick="iniciarCampanha()">Lançar campanha</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Detalhe notificação ── -->
+<div class="modal-overlay" id="modal-notif">
+  <div class="modal-box" style="max-width:420px">
+    <div class="modal-hd">
+      <span class="modal-title" id="notif-modal-title">Notificação</span>
+      <button class="modal-close" onclick="closeModal('modal-notif')">✕</button>
+    </div>
+    <div id="notif-modal-body" style="font-size:13px;line-height:1.7;color:var(--text-secondary)"></div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="closeModal('modal-notif')">OK, entendido</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-wrap" id="toast-wrap"></div>
+
+<script src="js/api.js"></script>
+<script src="js/admin.js"></script>
+</body>
+</html>

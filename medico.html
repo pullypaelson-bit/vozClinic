@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VozClinic — Médico</title>
+<link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+<div class="app">
+
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div style="display:flex;align-items:center;gap:7px;margin-bottom:3px">
+        <span class="live-dot"></span>
+        <span class="name">VozClinic</span>
+      </div>
+      <div class="sub" id="med-clinica">DentalStar</div>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-label">O meu painel</div>
+      <div class="nav-item active" onclick="showMedPage('agenda',this)"><span class="icon">▦</span><span>Agenda</span></div>
+      <div class="nav-item" onclick="showMedPage('pacientes',this)"><span class="icon">◎</span><span>Pacientes</span></div>
+      <div class="nav-item" onclick="showMedPage('historico',this)"><span class="icon">◷</span><span>Histórico</span></div>
+      <div class="nav-item" onclick="showMedPage('folgas',this)"><span class="icon">◔</span><span>As minhas folgas</span></div>
+    </div>
+
+    <div class="sidebar-footer">
+      <div style="display:flex;align-items:center;gap:8px">
+        <div class="avatar" id="med-avatar" style="background:#E6F1FB;color:#0C447C">DR</div>
+        <div><div class="user-name" id="med-nome-sidebar">Carregando...</div><div class="user-role" id="med-esp-sidebar">Médico</div></div>
+      </div>
+      <div class="btn-logout" onclick="logout()">← Sair</div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="topbar">
+      <div class="topbar-left">
+        <div class="avatar" id="tb-med-av" style="background:#E6F1FB;color:#0C447C">DR</div>
+        <div><div class="topbar-title" id="tb-med-title">Agenda de hoje</div><div class="topbar-sub" id="tb-med-sub"></div></div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="date" id="data-selector" class="form-input" style="width:auto;font-size:13px" onchange="mudarData(this.value)">
+        <button class="btn btn-sm btn-primary" onclick="openModal('modal-nova-marcacao')">+ Marcação</button>
+        <button class="btn btn-sm" onclick="openModal('modal-folga')">Folga</button>
+      </div>
+    </div>
+
+    <div class="content" id="med-content"></div>
+  </div>
+</div>
+
+<!-- ── MODAL: Atualizar estado consulta ── -->
+<div class="modal-overlay" id="modal-estado-consulta">
+  <div class="modal-box" style="max-width:440px">
+    <div class="modal-hd">
+      <span class="modal-title">Estado da consulta</span>
+      <button class="modal-close" onclick="closeModal('modal-estado-consulta')">✕</button>
+    </div>
+    <div id="estado-pac-info" style="display:flex;gap:10px;align-items:center;margin-bottom:1.25rem;padding:10px;background:var(--bg-secondary);border-radius:var(--radius-md)">
+      <div class="avatar lg" id="estado-av" style="background:#E6F1FB;color:#0C447C">MS</div>
+      <div><div style="font-weight:600;font-size:14px" id="estado-nome">Maria Silva</div><div style="font-size:12px;color:var(--text-secondary)" id="estado-hora-serv">09:00 · Higiene oral</div></div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">A consulta foi realizada?</label>
+      <div class="status-consulta">
+        <div class="status-btn" id="sb-realizada" onclick="selecionarStatus('realizada')">Realizada</div>
+        <div class="status-btn" id="sb-falta" onclick="selecionarStatus('falta')">Falta (não veio)</div>
+        <div class="status-btn" id="sb-atrasado" onclick="selecionarStatus('atrasado')">Veio atrasado</div>
+        <div class="status-btn" id="sb-cancelada" onclick="selecionarStatus('cancelada')">Cancelada</div>
+      </div>
+    </div>
+    <div class="form-group" id="atraso-wrap" style="display:none">
+      <label class="form-label">Quantos minutos de atraso?</label>
+      <input class="form-input" id="atraso-min" type="number" min="1" max="120" value="15" style="width:120px">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Notas clínicas</label>
+      <textarea class="form-textarea" id="estado-notas" placeholder="Resumo da consulta, tratamentos realizados..."></textarea>
+    </div>
+    <div style="padding:10px;background:var(--bg-info);border-radius:var(--radius-md);font-size:12px;color:var(--text-info);margin-bottom:1rem">
+      A administração receberá notificação automática do estado desta consulta.
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-estado-consulta')">Cancelar</button>
+      <button class="btn btn-primary" onclick="guardarEstado()">Guardar e notificar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Nova marcação ── -->
+<div class="modal-overlay" id="modal-nova-marcacao">
+  <div class="modal-box">
+    <div class="modal-hd">
+      <span class="modal-title">Nova marcação manual</span>
+      <button class="modal-close" onclick="closeModal('modal-nova-marcacao')">✕</button>
+    </div>
+    <div class="form-grid-2">
+      <div class="form-group"><label class="form-label">Nome do paciente</label><input class="form-input" id="nm-pac-nome" placeholder="Maria Silva"></div>
+      <div class="form-group"><label class="form-label">Telefone</label><input class="form-input" id="nm-pac-tel" placeholder="+351912345678"></div>
+    </div>
+    <div class="form-grid-2">
+      <div class="form-group"><label class="form-label">Data</label><input class="form-input" id="nm-data" type="date"></div>
+      <div class="form-group"><label class="form-label">Hora</label><select class="form-select" id="nm-hora"></select></div>
+    </div>
+    <div class="form-group"><label class="form-label">Serviço</label>
+      <select class="form-select" id="nm-servico">
+        <option>Consulta de rotina</option><option>Higiene oral</option>
+        <option>Branqueamento</option><option>Ortodontia</option>
+        <option>Implante — consulta</option><option>Implante — cirurgia</option>
+        <option>Extração</option><option>Selantes</option><option>Outro</option>
+      </select>
+    </div>
+    <div class="form-group"><label class="form-label">Idioma do paciente</label>
+      <select class="form-select" id="nm-idioma">
+        <option value="pt">Português</option><option value="en">Inglês</option>
+        <option value="es">Espanhol</option><option value="fr">Francês</option>
+      </select>
+    </div>
+    <div class="form-group"><label class="form-label">Notas</label><textarea class="form-textarea" id="nm-notas" style="min-height:60px" placeholder="Observações..."></textarea></div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-nova-marcacao')">Cancelar</button>
+      <button class="btn btn-primary" onclick="criarMarcacao()">Marcar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Registar folga ── -->
+<div class="modal-overlay" id="modal-folga">
+  <div class="modal-box" style="max-width:420px">
+    <div class="modal-hd">
+      <span class="modal-title">Registar folga</span>
+      <button class="modal-close" onclick="closeModal('modal-folga')">✕</button>
+    </div>
+    <div class="form-grid-2">
+      <div class="form-group"><label class="form-label">Data início</label><input class="form-input" id="folga-inicio" type="date"></div>
+      <div class="form-group"><label class="form-label">Data fim</label><input class="form-input" id="folga-fim" type="date"></div>
+    </div>
+    <div class="form-group"><label class="form-label">Motivo</label>
+      <select class="form-select" id="folga-motivo">
+        <option>Férias</option><option>Doença</option><option>Formação</option>
+        <option>Feriado</option><option>Outro</option>
+      </select>
+    </div>
+    <div class="form-group"><label class="form-label">Notas (opcional)</label><textarea class="form-textarea" id="folga-notas" style="min-height:60px" placeholder="Ex: Congresso em Lisboa"></textarea></div>
+    <div style="padding:10px;background:var(--bg-warning);border-radius:var(--radius-md);font-size:12px;color:var(--text-warning);margin-bottom:1rem">
+      A administração será notificada e a agenda bloqueada automaticamente. A IA não irá marcar consultas nestes dias.
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-folga')">Cancelar</button>
+      <button class="btn btn-primary" onclick="registarFolga()">Confirmar folga</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Ficha paciente ── -->
+<div class="modal-overlay" id="modal-paciente">
+  <div class="modal-box" style="max-width:560px">
+    <div class="modal-hd">
+      <span class="modal-title" id="pac-modal-title">Ficha do paciente</span>
+      <button class="modal-close" onclick="closeModal('modal-paciente')">✕</button>
+    </div>
+    <div id="pac-modal-body"></div>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toast-wrap"></div>
+<script src="js/api.js"></script>
+<script src="js/medico.js"></script>
+</body>
+</html>
