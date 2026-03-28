@@ -159,6 +159,60 @@
   </div>
 </div>
 
+<!-- ── MODAL: Registar folga (admin) ── -->
+<div class="modal-overlay" id="modal-admin-folga">
+  <div class="modal-box" style="max-width:460px">
+    <div class="modal-hd">
+      <span class="modal-title">Registar folga</span>
+      <button class="modal-close" onclick="closeModal('modal-admin-folga')">✕</button>
+    </div>
+    <div class="form-group"><label class="form-label">Médico</label>
+      <select class="form-select" id="admin-folga-medico"></select>
+    </div>
+    <div class="form-grid-2">
+      <div class="form-group"><label class="form-label">Data início</label><input class="form-input" id="admin-folga-inicio" type="date"></div>
+      <div class="form-group"><label class="form-label">Data fim</label><input class="form-input" id="admin-folga-fim" type="date"></div>
+    </div>
+    <div class="form-group"><label class="form-label">Motivo</label>
+      <select class="form-select" id="admin-folga-motivo">
+        <option>Férias</option><option>Doença</option><option>Formação</option>
+        <option>Feriado</option><option>Outro</option>
+      </select>
+    </div>
+    <div class="form-group"><label class="form-label">Notas (opcional)</label>
+      <textarea class="form-textarea" id="admin-folga-notas" style="min-height:60px" placeholder="Ex: Congresso em Lisboa"></textarea>
+    </div>
+    <div style="padding:10px;background:var(--bg-warning);border-radius:var(--radius-md);font-size:12px;color:var(--text-warning);margin-bottom:1rem">
+      O médico será notificado e a agenda bloqueada automaticamente. A IA não irá marcar consultas nestes dias.
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-admin-folga')">Cancelar</button>
+      <button class="btn btn-primary" onclick="registarFolgaAdmin()">Confirmar folga</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Remover médico ── -->
+<div class="modal-overlay" id="modal-remover-medico">
+  <div class="modal-box" style="max-width:420px">
+    <div class="modal-hd">
+      <span class="modal-title">Remover médico</span>
+      <button class="modal-close" onclick="closeModal('modal-remover-medico')">✕</button>
+    </div>
+    <div style="padding:12px;background:var(--bg-danger);border-radius:var(--radius-md);margin-bottom:1.25rem">
+      <div style="font-weight:600;color:var(--text-danger);margin-bottom:4px">⚠ Atenção</div>
+      <div style="font-size:13px;color:var(--text-danger)">Isto irá desativar a conta do médico <b id="remover-nome-medico"></b> e bloquear todos os acessos. As marcações e dados históricos são preservados.</div>
+    </div>
+    <div class="form-group"><label class="form-label">Para confirmar, escreve o nome do médico:</label>
+      <input class="form-input" id="remover-confirm-input" placeholder="Nome do médico">
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('modal-remover-medico')">Cancelar</button>
+      <button class="btn btn-danger" onclick="confirmarRemoverMedico()">Remover e revogar acessos</button>
+    </div>
+  </div>
+</div>
+
 <!-- Toast container -->
 <div class="toast-wrap" id="toast-wrap"></div>
 
