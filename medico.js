@@ -1,449 +1,258 @@
-/* medico.js — Lógica do painel do médico */
+/**
+ * medicos.js — Router /api/medicos
+ * CRUD médicos, agenda, marcações, pacientes, notas, folgas, stats
+ */
+import express from "express";
+import bcrypt from "bcryptjs";
+import { db } from "./database.js";
+import { requireAuth } from "./auth.js";
 
-let MEU_MEDICO = null;
-let DATA_ATUAL = today();
-let ESTADO_ATUAL = null;
-let MARCACAO_ATUAL = null;
+const router = express.Router();
 
-window.addEventListener('DOMContentLoaded', async () => {
-  const user = requireAuth('medico');
-  if (!user) return;
-  MEU_MEDICO = user;
+const CORES_MAP = {
+  blue:  { bg:"#E6F1FB", text:"#0C447C" },
+  green: { bg:"#E1F5EE", text:"#085041" },
+  amber: { bg:"#FAEEDA", text:"#633806" },
+  pink:  { bg:"#FBEAF0", text:"#72243E" },
+};
 
-  // Preenche UI com dados do médico
-  const av = document.getElementById('med-avatar');
-  if (av) { av.textContent = user.iniciais || user.nome?.slice(0,2) || 'DR'; av.style.background = user.cor?.bg || '#E6F1FB'; av.style.color = user.cor?.text || '#0C447C'; }
-  const tbAv = document.getElementById('tb-med-av');
-  if (tbAv) { tbAv.textContent = user.iniciais || 'DR'; tbAv.style.background = user.cor?.bg || '#E6F1FB'; tbAv.style.color = user.cor?.text || '#0C447C'; }
-  if (document.getElementById('med-nome-sidebar')) document.getElementById('med-nome-sidebar').textContent = user.nome;
-  if (document.getElementById('med-esp-sidebar')) document.getElementById('med-esp-sidebar').textContent = user.especialidade || '';
-
-  // Data hoje
-  const ds = document.getElementById('data-selector');
-  if (ds) { ds.value = DATA_ATUAL; ds.min = today(); }
-
-  atualizarTopbar('Agenda de hoje');
-  await showMedPage('agenda');
-
-  // Verificar notificações do médico a cada 30s
-  verificarNotificacoesMedico();
-  setInterval(verificarNotificacoesMedico, 30000);
+// ── GET /api/medicos ──────────────────────────────────────────────────────────
+router.get("/", requireAuth(), (req, res) => {
+  const hoje = new Date().toISOString().split("T")[0];
+  const medicos = db.getMedicosComStats(hoje);
+  // Remove hash de senha antes de enviar
+  res.json(medicos.map(({ senhaHash, ...m }) => m));
 });
 
-async function verificarNotificacoesMedico() {
-  try {
-    const notifs = await API.get('/notificacoes');
-    // Filtrar notificações relevantes para este médico
-    const minhas = notifs.filter(n =>
-      !n.lida && (
-        n.medicoNome === MEU_MEDICO?.nome ||
-        n.tipo === 'folga'
-      )
-    );
-    // Mostrar toast para novas notificações de folga registada pelo admin
-    const folgasNovas = minhas.filter(n => n.tipo === 'folga' && !n._visto);
-    folgasNovas.forEach(n => {
-      toast('Administração registou folga na tua agenda. Verifica em "As minhas folgas".', 'warning');
-      n._visto = true;
-    });
-  } catch {}
-}
+// ── POST /api/medicos ─────────────────────────────────────────────────────────
+router.post("/", requireAuth(["admin"]), async (req, res) => {
+  const { nome, especialidade, email, senha, iniciais, corNome, horario } = req.body;
+  if (!nome || !email || !senha) return res.status(400).json({ erro: "Nome, email e senha são obrigatórios." });
+  if (senha.length < 8) return res.status(400).json({ erro: "Senha deve ter mínimo 8 caracteres." });
+  if (db.getMedicoPorEmail(email)) return res.status(409).json({ erro: "Email já registado." });
 
-function atualizarTopbar(titulo) {
-  document.getElementById('tb-med-title').textContent = titulo;
-  document.getElementById('tb-med-sub').textContent = new Date(DATA_ATUAL + 'T00:00:00').toLocaleDateString('pt-PT', { weekday:'long', day:'numeric', month:'long' });
-}
+  const senhaHash = await bcrypt.hash(senha, 10);
+  const cor = CORES_MAP[corNome] || CORES_MAP.blue;
+  const m = db.criarMedico({ nome, especialidade, email: email.toLowerCase(), senhaHash, iniciais: (iniciais||nome.slice(0,2)).toUpperCase(), cor, horario: horario || "Segunda a Sexta, 09:00–18:00", ativo:true });
 
-async function showMedPage(name, el) {
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  if (el) el.classList.add('active');
-  const content = document.getElementById('med-content');
-  content.innerHTML = '';
-  switch(name) {
-    case 'agenda':    await renderAgenda(content); break;
-    case 'pacientes': await renderPacientes(content); break;
-    case 'historico': await renderHistorico(content); break;
-    case 'folgas':    renderMinhasFolgas(content); break;
-  }
-}
+  const { senhaHash: _, ...mSemHash } = m;
+  res.status(201).json(mSemHash);
+});
 
-function mudarData(val) { DATA_ATUAL = val; atualizarTopbar('Agenda de ' + new Date(val+'T00:00:00').toLocaleDateString('pt-PT',{day:'numeric',month:'long'})); renderAgenda(document.getElementById('med-content')); }
+// ── GET /api/medicos/:id ──────────────────────────────────────────────────────
+router.get("/:id", requireAuth(), (req, res) => {
+  const m = db.getMedico(req.params.id);
+  if (!m) return res.status(404).json({ erro: "Médico não encontrado." });
+  const { senhaHash, ...mSemHash } = m;
+  res.json(mSemHash);
+});
 
-// ── AGENDA ────────────────────────────────────────────────────────────────────
-async function renderAgenda(el) {
-  el.innerHTML = `
-  <div class="grid-4" style="margin-bottom:1.25rem" id="ag-stats">
-    <div class="stat-card"><div class="stat-label">Consultas hoje</div><div class="stat-value" id="ag-st-total">—</div></div>
-    <div class="stat-card"><div class="stat-label">Realizadas</div><div class="stat-value" id="ag-st-feitas">—</div></div>
-    <div class="stat-card"><div class="stat-label">Pendentes</div><div class="stat-value" id="ag-st-pend">—</div></div>
-    <div class="stat-card"><div class="stat-label">Slots livres</div><div class="stat-value" id="ag-st-livres">—</div></div>
-  </div>
-  <div class="grid-3-1">
-    <div class="card">
-      <div class="card-hd"><span class="card-title">Agenda</span><span class="badge badge-info" id="ag-livre-badge"></span></div>
-      <div id="ag-slots"></div>
-    </div>
-    <div>
-      <div class="card" style="margin-bottom:1rem">
-        <div class="card-hd"><span class="card-title">Próximos slots livres</span></div>
-        <div id="ag-proximos"></div>
-      </div>
-      <div class="card">
-        <div class="card-hd"><span class="card-title">Notas do dia</span></div>
-        <textarea class="form-textarea" id="notas-dia" placeholder="Notas clínicas, lembretes..." oninput="autoSaveNotas()"></textarea>
-      </div>
-    </div>
-  </div>`;
+// ── PATCH /api/medicos/:id ────────────────────────────────────────────────────
+router.patch("/:id", requireAuth(["admin"]), async (req, res) => {
+  const { nome, especialidade, horario, ativo, corNome } = req.body;
+  const dados = {};
+  if (nome) dados.nome = nome;
+  if (especialidade) dados.especialidade = especialidade;
+  if (horario) dados.horario = horario;
+  if (ativo !== undefined) dados.ativo = ativo;
+  if (corNome && CORES_MAP[corNome]) dados.cor = CORES_MAP[corNome];
 
-  carregarAgendaData();
-}
+  const m = db.atualizarMedico(req.params.id, dados);
+  if (!m) return res.status(404).json({ erro: "Médico não encontrado." });
+  const { senhaHash, ...mSemHash } = m;
+  res.json(mSemHash);
+});
 
-async function carregarAgendaData() {
-  try {
-    const agenda = await API.get(`/medicos/${MEU_MEDICO.id}/agenda?data=${DATA_ATUAL}`);
-    renderSlots(agenda.slots || []);
-  } catch {
-    renderSlotsDemo();
-  }
+// ─────────────────────────────────────────────────────────────────────────────
+//  AGENDA
+// ─────────────────────────────────────────────────────────────────────────────
 
-  try {
-    const nota = await API.get(`/medicos/${MEU_MEDICO.id}/notas?data=${DATA_ATUAL}`);
-    document.getElementById('notas-dia').value = nota || '';
-  } catch {}
+// ── GET /api/medicos/:id/agenda?data=YYYY-MM-DD ───────────────────────────────
+router.get("/:id/agenda", requireAuth(), (req, res) => {
+  const data = req.query.data || new Date().toISOString().split("T")[0];
+  const m = db.getMedico(req.params.id);
+  if (!m) return res.status(404).json({ erro: "Médico não encontrado." });
+  const slots = db.getAgendaEnriquecida(req.params.id, data);
+  res.json({ medicoId: req.params.id, data, slots });
+});
 
-  renderProximosSlots();
-}
+// ── GET /api/medicos/:id/agenda/semana ────────────────────────────────────────
+router.get("/:id/agenda/semana", requireAuth(), (req, res) => {
+  const m = db.getMedico(req.params.id);
+  if (!m) return res.status(404).json({ erro: "Médico não encontrado." });
+  res.json(db.getAgendaSemana(req.params.id));
+});
 
-function renderSlots(slots) {
-  const total = slots.length;
-  const livres = slots.filter(s => s.estado === 'livre').length;
-  const feitas = slots.filter(s => s.marcacao?.status === 'realizada').length;
-  const pendentes = slots.filter(s => s.estado !== 'livre' && s.marcacao?.status !== 'realizada').length;
+// ─────────────────────────────────────────────────────────────────────────────
+//  MARCAÇÕES
+// ─────────────────────────────────────────────────────────────────────────────
 
-  document.getElementById('ag-st-total').textContent = total - livres;
-  document.getElementById('ag-st-feitas').textContent = feitas;
-  document.getElementById('ag-st-pend').textContent = pendentes;
-  document.getElementById('ag-st-livres').textContent = livres;
-  document.getElementById('ag-livre-badge').textContent = `${livres} livres`;
+// ── GET /api/medicos/:id/marcacoes ────────────────────────────────────────────
+router.get("/:id/marcacoes", requireAuth(), (req, res) => {
+  const { data, limite } = req.query;
+  res.json(db.getMarcacoesMedico(req.params.id, data, limite));
+});
 
-  const el = document.getElementById('ag-slots');
-  el.innerHTML = slots.map(s => {
-    const isFree = s.estado === 'livre';
-    const st = s.marcacao?.status || 'pendente';
-    const dotClass = st === 'realizada' ? 'dot-done' : isFree ? 'dot-free' : st === 'falta' ? 'dot-pending' : 'dot-pending';
-    const ini = s.marcacao?.pacienteNome?.split(' ').map(x=>x[0]).join('').slice(0,2) || '—';
-    return `<div class="slot-row" id="slot-${s.hora.replace(':','')}">
-      <span class="slot-hora">${s.hora}</span>
-      <div class="slot-dot ${dotClass}"></div>
-      <div style="flex:1;min-width:0">
-        <div class="slot-name" style="${isFree?'color:var(--text-secondary)':''}">${isFree?'— Disponível —':(s.marcacao?.pacienteNome||'Marcação')}</div>
-        ${s.marcacao ? `<div class="slot-type">${s.marcacao.servico}${s.marcacao.idioma&&s.marcacao.idioma!=='pt'?' · <b>'+s.marcacao.idioma.toUpperCase()+'</b>':''}</div>` : ''}
-      </div>
-      <div class="slot-actions">
-        ${s.marcacao ? `
-          <span class="badge badge-${st==='realizada'?'success':st==='falta'?'danger':st==='atrasado'?'warning':'gray'}">${st}</span>
-          <button class="btn btn-sm" onclick="abrirEstadoConsulta(${JSON.stringify(s).replace(/"/g,'&quot;')})">Atualizar</button>
-          <button class="btn btn-sm" onclick="abrirFichaPaciente('${s.marcacao.pacienteId||''}','${s.marcacao.pacienteNome}')">Ficha</button>
-        ` : ''}
-      </div>
-    </div>`;
-  }).join('');
-}
+// ── POST /api/medicos/:id/marcacoes ───────────────────────────────────────────
+router.post("/:id/marcacoes", requireAuth(), (req, res) => {
+  const { pacienteNome, telefone, data, hora, servico, idioma, notas, pacienteId } = req.body;
+  if (!pacienteNome || !data || !hora) return res.status(400).json({ erro: "Nome, data e hora são obrigatórios." });
 
-function renderSlotsDemo() {
-  const demo = [
-    {hora:'09:00',estado:'ocupado',marcacao:{pacienteNome:'Maria Silva',servico:'Higiene oral',status:'realizada',idioma:'pt'}},
-    {hora:'09:30',estado:'ocupado',marcacao:{pacienteNome:'João Matos',servico:'Consulta rotina',status:'realizada',idioma:'pt'}},
-    {hora:'10:00',estado:'ocupado',marcacao:{pacienteNome:'Carlos Ramos',servico:'Ortodontia',status:'em_curso',idioma:'pt'}},
-    {hora:'10:30',estado:'livre',marcacao:null},
-    {hora:'11:00',estado:'ocupado',marcacao:{pacienteNome:'Sarah Connor',servico:'Check-up',status:'pendente',idioma:'en'}},
-    {hora:'11:30',estado:'ocupado',marcacao:{pacienteNome:'Rita P.',servico:'Branqueamento',status:'pendente',idioma:'pt'}},
-    {hora:'14:00',estado:'ocupado',marcacao:{pacienteNome:'Tiago N.',servico:'Extração',status:'pendente',idioma:'pt'}},
-    {hora:'14:30',estado:'livre',marcacao:null},
-  ];
-  renderSlots(demo);
-}
+  // Verificar disponibilidade
+  const agenda = db.getAgendaMedico(req.params.id, data);
+  if (!agenda[hora] || agenda[hora] !== "livre") return res.status(409).json({ erro: "Slot não disponível." });
 
-async function renderProximosSlots() {
-  const el = document.getElementById('ag-proximos');
-  if (!el) return;
-  try {
-    const semana = await API.get(`/medicos/${MEU_MEDICO.id}/agenda/semana`);
-    const diasComSlots = semana.filter(d => d.slots && d.slots.some(s => s.estado === 'livre')).slice(0,3);
-    if (diasComSlots.length) {
-      el.innerHTML = diasComSlots.map(d => {
-        const livres = d.slots.filter(s => s.estado === 'livre');
-        const dataFmt = new Date(d.data + 'T00:00:00').toLocaleDateString('pt-PT', { weekday:'short', day:'numeric', month:'short' });
-        return `<div style="margin-bottom:10px">
-          <div style="font-size:11px;font-weight:600;color:var(--text-secondary);margin-bottom:5px;text-transform:uppercase">${dataFmt}</div>
-          <div style="display:flex;flex-wrap:wrap;gap:4px">${livres.slice(0,6).map(s=>`<span class="badge badge-info">${s.hora}</span>`).join('')}</div>
-        </div>`;
-      }).join('');
-      return;
-    }
-  } catch {}
-  // Fallback demo
-  el.innerHTML = [
-    {label:'Amanhã', horas:['09:00','10:30','14:00','15:30']},
-    {label:'Depois de amanhã', horas:['09:30','11:00']},
-  ].map(d => `<div style="margin-bottom:10px">
-    <div style="font-size:11px;font-weight:600;color:var(--text-secondary);margin-bottom:5px;text-transform:uppercase">${d.label}</div>
-    <div style="display:flex;flex-wrap:wrap;gap:4px">${d.horas.map(h=>`<span class="badge badge-info">${h}</span>`).join('')}</div>
-  </div>`).join('');
-}
-
-let notasTimer;
-function autoSaveNotas() {
-  clearTimeout(notasTimer);
-  notasTimer = setTimeout(async () => {
-    const conteudo = document.getElementById('notas-dia')?.value;
-    try { await API.post(`/medicos/${MEU_MEDICO.id}/notas`, { data: DATA_ATUAL, conteudo }); } catch {}
-  }, 1500);
-}
-
-// ── ESTADO CONSULTA ───────────────────────────────────────────────────────────
-function abrirEstadoConsulta(slot) {
-  MARCACAO_ATUAL = slot;
-  const m = slot.marcacao;
-  const ini = m.pacienteNome?.split(' ').map(x=>x[0]).join('').slice(0,2) || '??';
-  document.getElementById('estado-av').textContent = ini;
-  document.getElementById('estado-nome').textContent = m.pacienteNome;
-  document.getElementById('estado-hora-serv').textContent = `${slot.hora} · ${m.servico}`;
-  ESTADO_ATUAL = m.status || null;
-  ['realizada','falta','atrasado','cancelada'].forEach(s => document.getElementById(`sb-${s}`).className = 'status-btn');
-  if (ESTADO_ATUAL) document.getElementById(`sb-${ESTADO_ATUAL}`)?.classList.add(`selected-${ESTADO_ATUAL}`);
-  document.getElementById('atraso-wrap').style.display = 'none';
-  document.getElementById('estado-notas').value = m.notas || '';
-  openModal('modal-estado-consulta');
-}
-
-function selecionarStatus(s) {
-  ESTADO_ATUAL = s;
-  ['realizada','falta','atrasado','cancelada'].forEach(st => {
-    const el = document.getElementById(`sb-${st}`);
-    if (el) el.className = 'status-btn' + (st === s ? ` selected-${s}` : '');
+  const marc = db.criarMarcacao({
+    medicoId: req.params.id, pacienteId: pacienteId || null, pacienteNome,
+    telefone, data, hora, servico: servico || "Consulta rotina",
+    idioma: idioma || "pt", notas: notas || "", origem: "manual",
   });
-  document.getElementById('atraso-wrap').style.display = s === 'atrasado' ? 'block' : 'none';
-}
-
-async function guardarEstado() {
-  if (!ESTADO_ATUAL) return toast('Seleciona o estado da consulta.','warning');
-  const notas = document.getElementById('estado-notas').value;
-  const atraso = ESTADO_ATUAL === 'atrasado' ? parseInt(document.getElementById('atraso-min').value) : 0;
-
-  try {
-    await API.patch(`/medicos/${MEU_MEDICO.id}/marcacoes/${MARCACAO_ATUAL.marcacao?.id||'demo'}`, {
-      status: ESTADO_ATUAL, notas, minutosAtraso: atraso,
-    });
-    toast('Estado guardado. Administração notificada.','success');
-    closeModal('modal-estado-consulta');
-    carregarAgendaData();
-  } catch {
-    // Demo: update local
-    toast('Estado guardado (demo). Administração notificada.','success');
-    closeModal('modal-estado-consulta');
-  }
-}
-
-// ── NOVA MARCAÇÃO ─────────────────────────────────────────────────────────────
-async function criarMarcacao() {
-  const dados = {
-    pacienteNome: document.getElementById('nm-pac-nome').value,
-    telefone: document.getElementById('nm-pac-tel').value,
-    data: document.getElementById('nm-data').value,
-    hora: document.getElementById('nm-hora').value,
-    servico: document.getElementById('nm-servico').value,
-    idioma: document.getElementById('nm-idioma').value,
-    notas: document.getElementById('nm-notas').value,
-  };
-  if (!dados.pacienteNome || !dados.data || !dados.hora) return toast('Preenche nome, data e hora.','warning');
-  try {
-    await API.post(`/medicos/${MEU_MEDICO.id}/marcacoes`, dados);
-    toast('Marcação criada!','success');
-    closeModal('modal-nova-marcacao');
-    carregarAgendaData();
-  } catch(e) { toast(e.message,'error'); }
-}
-
-// Preenche select de horas ao escolher data
-async function carregarHorasDisponiveis(dataVal) {
-  const sel = document.getElementById('nm-hora');
-  if (!sel || !dataVal) return;
-  sel.innerHTML = '<option>A carregar...</option>';
-  try {
-    const medicoId = MEU_MEDICO?.id;
-    if (!medicoId) throw new Error('sem medico');
-    const ag = await API.get(`/medicos/${medicoId}/agenda?data=${dataVal}`);
-    const livres = (ag.slots||[]).filter(s=>s.estado==='livre');
-    if (livres.length) {
-      sel.innerHTML = livres.map(s=>`<option value="${s.hora}">${s.hora}</option>`).join('');
-    } else {
-      sel.innerHTML = '<option value="">Sem vagas neste dia</option>';
-    }
-  } catch {
-    sel.innerHTML = ['09:00','09:30','10:00','10:30','11:00','14:00','14:30','15:00'].map(h=>`<option value="${h}">${h}</option>`).join('');
-  }
-}
-
-// Abre modal de nova marcação e pré-carrega data+horas de hoje
-function abrirNovaMarcacao() {
-  const hoje = today();
-  const nmData = document.getElementById('nm-data');
-  if (nmData) { nmData.value = hoje; nmData.min = hoje; }
-  document.getElementById('nm-hora').innerHTML = '<option>A carregar...</option>';
-  openModal('modal-nova-marcacao');
-  carregarHorasDisponiveis(hoje);
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-  const nmData = document.getElementById('nm-data');
-  if (nmData) nmData.addEventListener('change', function() { carregarHorasDisponiveis(this.value); });
+  res.status(201).json(marc);
 });
 
-// ── FOLGA ─────────────────────────────────────────────────────────────────────
-async function registarFolga() {
-  const inicio = document.getElementById('folga-inicio').value;
-  const fim = document.getElementById('folga-fim').value || inicio;
-  const motivo = document.getElementById('folga-motivo').value;
-  const notas = document.getElementById('folga-notas').value;
-  if (!inicio) return toast('Seleciona pelo menos a data de início.','warning');
-  try {
-    await API.post(`/medicos/${MEU_MEDICO.id}/folgas`, { inicio, fim, motivo, notas });
-    toast('Folga registada. Administração notificada e agenda bloqueada.','success');
-    closeModal('modal-folga');
-  } catch { toast('Folga registada (demo). Administração notificada.','success'); closeModal('modal-folga'); }
-}
+// ── PATCH /api/medicos/:id/marcacoes/:mid ─────────────────────────────────────
+router.patch("/:id/marcacoes/:mid", requireAuth(), (req, res) => {
+  const { status, notas, minutosAtraso } = req.body;
+  const marc = db.getMarcacao(req.params.mid);
+  if (!marc || marc.medicoId !== req.params.id) return res.status(404).json({ erro: "Marcação não encontrada." });
 
-// ── PACIENTES ─────────────────────────────────────────────────────────────────
-async function renderPacientes(el) {
-  el.innerHTML = `
-  <div class="card">
-    <div class="card-hd"><span class="card-title">Os meus pacientes</span></div>
-    <div style="margin-bottom:1rem"><input class="form-input" id="pac-search" placeholder="Pesquisar nome, telemóvel..." oninput="filtrarPacs()" style="max-width:340px"></div>
-    <div id="pacs-lista"></div>
-  </div>`;
-  await carregarPacientes();
-}
+  const dados = {};
+  if (status) dados.status = status;
+  if (notas !== undefined) dados.notas = notas;
+  if (minutosAtraso) dados.minutosAtraso = minutosAtraso;
 
-async function carregarPacientes() {
-  try {
-    const pacs = await API.get(`/medicos/${MEU_MEDICO.id}/pacientes`);
-    renderListaPacs(pacs);
-  } catch { renderListaPacs(DEMO_PACS); }
-}
+  const atualizada = db.atualizarMarcacao(req.params.mid, dados);
+  const medico = db.getMedico(req.params.id);
 
-function renderListaPacs(pacs) {
-  const el = document.getElementById('pacs-lista');
-  if (!el) return;
-  el.innerHTML = `<table class="data-table">
-    <thead><tr><th>Nome</th><th>Telefone</th><th>Última consulta</th><th>Visitas</th><th>Idioma</th><th></th></tr></thead>
-    <tbody>${pacs.map(p => `
-    <tr onclick="abrirFichaPaciente('${p.id}','${p.nome}')">
-      <td><div style="display:flex;align-items:center;gap:8px">
-        <div class="avatar" style="background:${MEU_MEDICO.cor?.bg||'#E6F1FB'};color:${MEU_MEDICO.cor?.text||'#0C447C'};width:28px;height:28px;font-size:10px">${p.nome.split(' ').map(x=>x[0]).join('').slice(0,2)}</div>
-        <span style="font-weight:500">${p.nome}</span>
-      </div></td>
-      <td style="font-family:var(--font-mono);font-size:12px">${p.telefone||'—'}</td>
-      <td>${fmtData(p.ultimaConsulta)}</td>
-      <td style="font-weight:600">${p.visitas||0}</td>
-      <td><span class="badge badge-gray">${{pt:'PT',en:'EN',es:'ES',fr:'FR',it:'IT'}[p.idioma]||'PT'}</span></td>
-      <td><button class="btn btn-sm" onclick="event.stopPropagation();abrirFichaPaciente('${p.id}','${p.nome}')">Ficha</button></td>
-    </tr>`).join('')}
-    </tbody></table>`;
-}
-
-async function filtrarPacs() {
-  const q = document.getElementById('pac-search').value.toLowerCase();
-  try {
-    const pacs = await API.get(`/medicos/${MEU_MEDICO.id}/pacientes?pesquisa=${encodeURIComponent(q)}`);
-    renderListaPacs(pacs);
-  } catch { renderListaPacs(DEMO_PACS.filter(p => p.nome.toLowerCase().includes(q) || p.telefone?.includes(q))); }
-}
-
-async function abrirFichaPaciente(id, nome) {
-  document.getElementById('pac-modal-title').textContent = nome || 'Ficha do paciente';
-  document.getElementById('pac-modal-body').innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-secondary)">A carregar...</div>';
-  openModal('modal-paciente');
-
-  try {
-    const p = await API.get(`/medicos/${MEU_MEDICO.id}/pacientes/${id}`);
-    renderFichaPac(p);
-  } catch { renderFichaPac(DEMO_PACS.find(x=>x.id===id) || {id, nome, telefone:'—', idioma:'pt', visitas:0, historico:[], chamadas:[]}); }
-}
-
-function renderFichaPac(p) {
-  const ini = p.nome?.split(' ').map(x=>x[0]).join('').slice(0,2) || '??';
-  document.getElementById('pac-modal-body').innerHTML = `
-  <div style="display:flex;gap:12px;align-items:center;padding:12px;background:var(--bg-secondary);border-radius:var(--radius-md);margin-bottom:1.25rem">
-    <div class="avatar xl" style="background:${MEU_MEDICO.cor?.bg||'#E6F1FB'};color:${MEU_MEDICO.cor?.text||'#0C447C'}">${ini}</div>
-    <div style="flex:1">
-      <div style="font-size:16px;font-weight:600">${p.nome}</div>
-      <div style="font-size:12px;color:var(--text-secondary)">${p.telefone||'—'} · ${p.email||'—'}</div>
-    </div>
-    <span class="badge badge-success">Ativo</span>
-  </div>
-  <div class="form-grid-2" style="margin-bottom:1rem">
-    <div><div style="font-size:11px;color:var(--text-secondary)">Data de nascimento</div><div style="font-size:13px;font-weight:500">${fmtData(p.dataNascimento)||'—'}</div></div>
-    <div><div style="font-size:11px;color:var(--text-secondary)">NIF</div><div style="font-size:13px;font-weight:500">${p.nif||'—'}</div></div>
-    <div><div style="font-size:11px;color:var(--text-secondary)">Subsistema</div><div style="font-size:13px;font-weight:500">${p.subsistema||'Privado'}</div></div>
-    <div><div style="font-size:11px;color:var(--text-secondary)">Idioma</div><div style="font-size:13px;font-weight:500">${{pt:'Português',en:'Inglês',es:'Espanhol',fr:'Francês',it:'Italiano'}[p.idioma]||p.idioma||'Português'}</div></div>
-  </div>
-  ${p.obs ? `<div style="background:var(--bg-warning);border-radius:var(--radius-md);padding:10px 12px;font-size:12px;color:var(--text-warning);margin-bottom:1rem">${p.obs}</div>` : ''}
-  <div style="font-size:13px;font-weight:600;margin-bottom:.5rem">Histórico de consultas</div>
-  ${(p.historico||[]).slice(0,5).map(h=>`
-  <div style="display:flex;gap:10px;padding:7px 0;border-bottom:0.5px solid var(--border);font-size:12px">
-    <span style="font-family:var(--font-mono);color:var(--text-secondary);min-width:80px">${fmtData(h.data)||h.data||'—'}</span>
-    <div><div style="font-weight:500;color:var(--text-primary)">${h.servico||h.serv||'Consulta'}</div><div style="color:var(--text-secondary);margin-top:1px">${h.notas||h.obs||''}</div></div>
-  </div>`).join('')||'<div style="font-size:12px;color:var(--text-secondary);padding:8px 0">Sem histórico registado.</div>'}
-  ${(p.chamadas||[]).length>0?`<div style="font-size:13px;font-weight:600;margin-top:1rem;margin-bottom:.5rem">Chamadas IA</div>${p.chamadas.slice(0,3).map(c=>`<div style="font-size:12px;color:var(--text-secondary);padding:6px 0;border-bottom:0.5px solid var(--border)">${fmtData(c.inicio)||'—'} · ${c.duracao||'—'}s · ${c.status||'—'}</div>`).join('')}`:''}`;
-}
-
-// ── HISTÓRICO ─────────────────────────────────────────────────────────────────
-async function renderHistorico(el) {
-  el.innerHTML = `<div class="card"><div class="card-hd"><span class="card-title">Histórico de consultas realizadas</span></div><div id="hist-lista"></div></div>`;
-  try {
-    const marc = await API.get(`/medicos/${MEU_MEDICO.id}/marcacoes?limite=50`);
-    document.getElementById('hist-lista').innerHTML = `<table class="data-table">
-      <thead><tr><th>Data</th><th>Hora</th><th>Paciente</th><th>Serviço</th><th>Estado</th><th>Origem</th></tr></thead>
-      <tbody>${marc.map(m=>`<tr>
-        <td>${fmtData(m.data)||'—'}</td><td style="font-family:var(--font-mono)">${m.hora||'—'}</td>
-        <td style="font-weight:500">${m.pacienteNome||'—'}</td><td>${m.servico||'—'}</td>
-        <td><span class="badge badge-${m.status==='realizada'?'success':m.status==='falta'?'danger':m.status==='atrasado'?'warning':'gray'}">${m.status||'pendente'}</span></td>
-        <td><span class="badge badge-${m.origem==='ia'?'info':'gray'}">${m.origem==='ia'?'IA':'Manual'}</span></td>
-      </tr>`).join('')}</tbody></table>`;
-  } catch { document.getElementById('hist-lista').innerHTML = '<div style="font-size:13px;color:var(--text-secondary);padding:1rem">Sem dados em modo demo.</div>'; }
-}
-
-// ── AS MINHAS FOLGAS ──────────────────────────────────────────────────────────
-function renderMinhasFolgas(el) {
-  el.innerHTML = `
-  <div class="card">
-    <div class="card-hd"><span class="card-title">As minhas folgas</span><button class="btn btn-sm btn-primary" onclick="openModal('modal-folga')">+ Registar folga</button></div>
-    <table class="data-table">
-      <thead><tr><th>Início</th><th>Fim</th><th>Motivo</th><th>Notas</th><th>Estado</th></tr></thead>
-      <tbody id="folgas-med"></tbody>
-    </table>
-  </div>`;
-  carregarMinhasFolgas();
-}
-
-async function carregarMinhasFolgas() {
-  try {
-    const folgas = await API.get(`/medicos/${MEU_MEDICO.id}/folgas`);
-    document.getElementById('folgas-med').innerHTML = folgas.map(f=>`<tr>
-      <td>${fmtData(f.inicio)}</td><td>${fmtData(f.fim)||fmtData(f.inicio)}</td>
-      <td>${f.motivo||'—'}</td><td style="color:var(--text-secondary)">${f.notas||'—'}</td>
-      <td><span class="badge badge-${new Date(f.inicio)>new Date()?'warning':'gray'}">${new Date(f.inicio)>new Date()?'Futura':'Passada'}</span></td>
-    </tr>`).join('');
-  } catch {
-    document.getElementById('folgas-med').innerHTML = `<tr><td>26/03/2026</td><td>26/03/2026</td><td>Formação</td><td>Congresso Lisboa</td><td><span class="badge badge-warning">Futura</span></td></tr>`;
+  // Criar notificação automática
+  if (status) {
+    const msgs = {
+      falta:     { tipo:"falta",       urgencia:"alta",  msg:`${marc.pacienteNome} não compareceu à consulta das ${marc.hora} com ${medico?.nome}.` },
+      atrasado:  { tipo:"atraso",      urgencia:"media", msg:`${marc.pacienteNome} chegou ${minutosAtraso||"?"} min atrasado à consulta com ${medico?.nome}.` },
+      cancelada: { tipo:"cancelamento",urgencia:"media", msg:`${medico?.nome} cancelou consulta de ${marc.pacienteNome} às ${marc.hora}. Slot libertado.` },
+      realizada: { tipo:"info",        urgencia:"baixa", msg:`Consulta de ${marc.pacienteNome} com ${medico?.nome} realizada com sucesso.` },
+    };
+    if (msgs[status]) db.criarNotificacao({ ...msgs[status], medicoNome: medico?.nome });
   }
-}
 
-// ── Demo data ─────────────────────────────────────────────────────────────────
-const DEMO_PACS = [
-  {id:'p1',nome:'Maria Silva',telefone:'+351912345678',email:'maria@email.pt',idioma:'pt',visitas:7,dataNascimento:'1985-04-12',nif:'234567890',subsistema:'ADSE',obs:'Alergia a anestesia com epinefrina.',historico:[{data:'2026-03-24',serv:'Higiene oral',obs:'Sem cáries.'},{data:'2026-03-10',serv:'Consulta rotina',obs:'Radiografia ok.'}]},
-  {id:'p2',nome:'João Matos',telefone:'+351963456789',email:'joao@email.pt',idioma:'pt',visitas:3,historico:[]},
-  {id:'p3',nome:'Carlos Ramos',telefone:'+351934567890',email:'carlos@email.pt',idioma:'pt',visitas:12,obs:'Ansiedade dentária. Prefer sedação consciente.',historico:[]},
-  {id:'p4',nome:'Sarah Connor',telefone:'+447700900000',email:'sarah@email.co.uk',idioma:'en',visitas:2,historico:[]},
-];
+  res.json(atualizada);
+});
+
+// ── DELETE /api/medicos/:id/marcacoes/:mid ────────────────────────────────────
+router.delete("/:id/marcacoes/:mid", requireAuth(), (req, res) => {
+  const marc = db.getMarcacao(req.params.mid);
+  if (!marc || marc.medicoId !== req.params.id) return res.status(404).json({ erro: "Marcação não encontrada." });
+  db.atualizarMarcacao(req.params.mid, { status:"cancelada" });
+  res.json({ mensagem: "Marcação cancelada e slot libertado." });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  PACIENTES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── GET /api/medicos/:id/pacientes ────────────────────────────────────────────
+router.get("/:id/pacientes", requireAuth(), (req, res) => {
+  res.json(db.getPacientes(req.params.id, req.query.pesquisa));
+});
+
+// ── GET /api/medicos/:id/pacientes/:pid ───────────────────────────────────────
+router.get("/:id/pacientes/:pid", requireAuth(), (req, res) => {
+  const pac = db.getPacienteCompleto(req.params.id, req.params.pid);
+  if (!pac) return res.status(404).json({ erro: "Paciente não encontrado." });
+  res.json(pac);
+});
+
+// ── POST /api/medicos/:id/pacientes ───────────────────────────────────────────
+router.post("/:id/pacientes", requireAuth(), (req, res) => {
+  const { nome, telefone, email, dataNascimento, nif, subsistema, idioma, obs } = req.body;
+  if (!nome) return res.status(400).json({ erro: "Nome é obrigatório." });
+  const p = db.criarPaciente({ nome, telefone, email, dataNascimento, nif, subsistema, idioma: idioma||"pt", obs, medicoId: req.params.id });
+  res.status(201).json(p);
+});
+
+// ── PATCH /api/medicos/:id/pacientes/:pid ─────────────────────────────────────
+router.patch("/:id/pacientes/:pid", requireAuth(), (req, res) => {
+  const p = db.getPaciente(req.params.pid);
+  if (!p || p.medicoId !== req.params.id) return res.status(404).json({ erro: "Paciente não encontrado." });
+  const atualizado = db.atualizarPaciente(req.params.pid, req.body);
+  res.json(atualizado);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  STATS
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/:id/stats", requireAuth(), (req, res) => {
+  const m = db.getMedico(req.params.id);
+  if (!m) return res.status(404).json({ erro: "Médico não encontrado." });
+  res.json(db.getStatsMedico(req.params.id, req.query.periodo));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  NOTAS CLÍNICAS
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/:id/notas", requireAuth(), (req, res) => {
+  const data = req.query.data || new Date().toISOString().split("T")[0];
+  res.json(db.getNotaMedico(req.params.id, data));
+});
+
+router.post("/:id/notas", requireAuth(), (req, res) => {
+  const { data, conteudo } = req.body;
+  if (!data) return res.status(400).json({ erro: "Data é obrigatória." });
+  db.guardarNotaMedico(req.params.id, data, conteudo || "");
+  res.json({ mensagem: "Nota guardada." });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  FOLGAS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── GET /api/medicos/:id/folgas ───────────────────────────────────────────────
+router.get("/:id/folgas", requireAuth(), (req, res) => {
+  res.json(db.getFolgas(req.params.id));
+});
+
+// ── POST /api/medicos/:id/folgas ──────────────────────────────────────────────
+router.post("/:id/folgas", requireAuth(), (req, res) => {
+  const { inicio, fim, motivo, notas } = req.body;
+  if (!inicio) return res.status(400).json({ erro: "Data de início é obrigatória." });
+
+  const medico = db.getMedico(req.params.id);
+  if (!medico) return res.status(404).json({ erro: "Médico não encontrado." });
+
+  const folga = db.criarFolga({ medicoId: req.params.id, inicio, fim: fim||inicio, motivo, notas, registadaPor: req.user.role });
+
+  const periodo = `${inicio}${fim&&fim!==inicio?" a "+fim:""}`;
+  const motivoStr = motivo || "sem motivo especificado";
+
+  // Notificação para admin (sempre)
+  db.criarNotificacao({
+    tipo: "folga",
+    urgencia: "media",
+    medicoNome: medico.nome,
+    msg: req.user.role === "admin"
+      ? `Administração registou folga para ${medico.nome}: ${periodo} (${motivoStr}). Agenda bloqueada.`
+      : `${medico.nome} registou folga: ${periodo} (${motivoStr}). Agenda bloqueada.`,
+  });
+
+  // Se foi o admin a registar, cria notificação para o médico ver no seu painel
+  if (req.user.role === "admin") {
+    db.criarNotificacao({
+      tipo: "info",
+      urgencia: "media",
+      medicoNome: medico.nome,
+      paraMediacoId: medico.id,
+      msg: `A administração registou uma folga para si: ${periodo} (${motivoStr}). A sua agenda foi bloqueada nesses dias.`,
+    });
+  }
+
+  res.status(201).json(folga);
+});
+
+// ── DELETE /api/medicos/:id/folgas/:fid ───────────────────────────────────────
+router.delete("/:id/folgas/:fid", requireAuth(["admin"]), (req, res) => {
+  const ok = db.cancelarFolga(req.params.fid);
+  if (!ok) return res.status(404).json({ erro: "Folga não encontrada." });
+  res.json({ mensagem: "Folga cancelada e agenda restaurada." });
+});
+
+export default router;
