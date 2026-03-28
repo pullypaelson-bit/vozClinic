@@ -351,7 +351,7 @@ Confirma presença? Responda SIM, NÃO ou REMARCAR.</div>
 function renderFolgas(el) {
   el.innerHTML = `
   <div class="card" style="margin-bottom:1rem">
-    <div class="card-hd"><span class="card-title">Folgas registadas</span></div>
+    <div class="card-hd"><span class="card-title">Folgas registadas</span><button class="btn btn-sm btn-primary" onclick="abrirModalFolgaAdmin('')">+ Registar folga</button></div>
     <table class="data-table">
       <thead><tr><th>Médico</th><th>Início</th><th>Fim</th><th>Motivo</th><th>Estado</th></tr></thead>
       <tbody id="folgas-tbody">
@@ -397,13 +397,16 @@ function renderNotificacoes(el) {
   <div class="card">
     <div class="card-hd"><span class="card-title">Todas as notificações</span><button class="btn btn-sm" onclick="marcarTodasLidas()">Marcar todas como lidas</button></div>
     ${notifs.map(n => `
-    <div style="display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:0.5px solid var(--border);${n.lida?'opacity:.6':''}">
+    <div style="display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-bottom:0.5px solid var(--border);${n.lida?'opacity:.55':''}">
       <span class="badge badge-${n.tipo==='falta'?'danger':n.tipo==='atraso'?'warning':n.tipo==='ia'?'info':'success'}">${n.tipo}</span>
       <div style="flex:1">
         <div style="font-size:13px;color:var(--text-primary)">${n.msg}</div>
-        <div style="font-size:11px;color:var(--text-secondary);margin-top:3px">${n.medico} · ${n.tempo}</div>
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:3px">${n.medicoNome||n.medico||''} · ${n.tempo||new Date(n.criadoEm||'').toLocaleTimeString('pt-PT',{hour:'2-digit',minute:'2-digit'})}</div>
       </div>
-      ${!n.lida ? `<span style="width:8px;height:8px;background:var(--accent);border-radius:50%;margin-top:4px;flex-shrink:0"></span>` : ''}
+      <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+        ${!n.lida ? `<span style="width:8px;height:8px;background:var(--accent);border-radius:50%"></span>
+        <button class="btn btn-sm" onclick="marcarUmaLida('${n.id}')">Lida</button>` : ''}
+      </div>
     </div>`).join('')}
   </div>`;
 }
@@ -446,7 +449,7 @@ function renderCampanhas(el) {
 
 function renderConfig(el) {
   el.innerHTML = `
-  <div class="grid-2">
+  <div class="grid-2" style="margin-bottom:1rem">
     <div class="card">
       <div class="card-hd"><span class="card-title">Voz da IA</span></div>
       <div class="form-group"><label class="form-label">Nome da secretária</label><input class="form-input" value="Sofia"></div>
@@ -461,14 +464,60 @@ function renderConfig(el) {
       <button class="btn btn-primary btn-sm" onclick="toast('Configurações guardadas!','success')">Guardar</button>
     </div>
     <div class="card">
-      <div class="card-hd"><span class="card-title">Integrações</span></div>
-      <div style="font-size:13px;line-height:2;color:var(--text-secondary)">
+      <div class="card-hd"><span class="card-title">Estado das integrações</span></div>
+      <div style="font-size:13px;line-height:2.2;color:var(--text-secondary)">
         Twilio: <span style="color:#22c55e;font-weight:500">● Ligado</span><br>
         ElevenLabs: <span style="color:#22c55e;font-weight:500">● Ligado</span><br>
         Anthropic API: <span style="color:#22c55e;font-weight:500">● Ligado</span><br>
         Google Calendar: <span style="color:var(--text-warning);font-weight:500">● Não configurado</span>
       </div>
     </div>
+  </div>
+  <div class="card">
+    <div class="card-hd"><span class="card-title">Google Calendar — Como ligar</span></div>
+    <div style="font-size:13px;color:var(--text-secondary);line-height:1.9">
+      <div style="margin-bottom:1rem">O Google Calendar permite sincronizar as marcações do VozClinic com a agenda do Google de cada médico automaticamente.</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="padding:10px 14px;background:var(--bg-secondary);border-radius:var(--radius-md);border-left:3px solid var(--accent)">
+          <div style="font-weight:600;color:var(--text-primary);margin-bottom:4px">1. Criar projeto no Google Cloud</div>
+          <div>Vai a <b>console.cloud.google.com</b> → Novo projeto → Ativa a API <b>"Google Calendar API"</b></div>
+        </div>
+        <div style="padding:10px 14px;background:var(--bg-secondary);border-radius:var(--radius-md);border-left:3px solid var(--accent)">
+          <div style="font-weight:600;color:var(--text-primary);margin-bottom:4px">2. Criar credenciais OAuth2</div>
+          <div>APIs & Serviços → Credenciais → Criar credencial → <b>ID do cliente OAuth</b> → Aplicação Web → copia o <b>Client ID</b> e <b>Client Secret</b></div>
+        </div>
+        <div style="padding:10px 14px;background:var(--bg-secondary);border-radius:var(--radius-md);border-left:3px solid var(--accent)">
+          <div style="font-weight:600;color:var(--text-primary);margin-bottom:4px">3. Adicionar variáveis no Railway</div>
+          <div>Railway → Variables → Adicionar:<br>
+          <code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:4px;font-size:12px">GOOGLE_CLIENT_ID</code>&nbsp;
+          <code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:4px;font-size:12px">GOOGLE_CLIENT_SECRET</code>&nbsp;
+          <code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:4px;font-size:12px">GOOGLE_REDIRECT_URI</code>
+          </div>
+        </div>
+        <div style="padding:10px 14px;background:var(--bg-secondary);border-radius:var(--radius-md);border-left:3px solid var(--accent)">
+          <div style="font-weight:600;color:var(--text-primary);margin-bottom:4px">4. Autorizar cada médico</div>
+          <div>Cada médico entra no painel → Configurações → "Ligar Google Calendar" → autoriza com a sua conta Google. As marcações passam a aparecer automaticamente na agenda deles.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:1rem">
+    <div class="card-hd"><span class="card-title">Gestão de médicos</span><button class="btn btn-sm btn-primary" onclick="openModal('modal-novo-medico')">+ Adicionar médico</button></div>
+    <table class="data-table">
+      <thead><tr><th>Médico</th><th>Especialidade</th><th>Email</th><th>Estado</th><th>Ações</th></tr></thead>
+      <tbody>${MEDICOS.map(m=>`
+      <tr>
+        <td><div style="display:flex;align-items:center;gap:8px">
+          <div class="avatar" style="background:${m.cor?.bg};color:${m.cor?.text}">${m.iniciais}</div>
+          <span style="font-weight:500">${m.nome}</span>
+        </div></td>
+        <td style="color:var(--text-secondary)">${m.especialidade||'—'}</td>
+        <td style="font-size:12px;color:var(--text-secondary)">${m.email||'—'}</td>
+        <td><span class="badge badge-success">Ativo</span></td>
+        <td><button class="btn btn-sm btn-danger" onclick="abrirRemoverMedico('${m.id}')">Remover</button></td>
+      </tr>`).join('')}
+      </tbody>
+    </table>
   </div>`;
 }
 
@@ -488,7 +537,11 @@ async function criarMedico() {
     await API.post('/medicos', dados);
     toast(`${dados.nome} adicionado com sucesso!`,'success');
     closeModal('modal-novo-medico');
+    // Limpar campos
+    ['nm-nome','nm-esp','nm-email','nm-senha','nm-iniciais'].forEach(id => { const el = document.getElementById(id); if(el) el.value=''; });
     await carregarMedicos();
+    // Se está no dashboard, refresca
+    if (currentPage === 'dashboard') showPage('dashboard');
   } catch(e) { toast(e.message,'error'); }
 }
 
@@ -501,7 +554,69 @@ async function iniciarCampanha() {
   } catch(e) { toast(e.message,'error'); }
 }
 
-function marcarTodasLidas() { NOTIFICACOES.forEach(n => n.lida = true); toast('Todas as notificações marcadas como lidas.','success'); renderNotificacoes(document.getElementById('main-content')); }
+async function marcarTodasLidas() {
+  try { await API.post('/notificacoes/marcar-todas', {}); } catch {}
+  NOTIFICACOES.forEach(n => { n.lida = true; });
+  const badge = document.getElementById('notif-count');
+  if (badge) { badge.textContent = '0'; badge.style.display = 'none'; }
+  const dashBadge = document.getElementById('dash-notif-badge');
+  if (dashBadge) { dashBadge.textContent = '0'; dashBadge.style.display = 'none'; }
+  toast('Todas as notificações marcadas como lidas.', 'success');
+  // Recarrega da API para garantir sincronização
+  try { NOTIFICACOES = await API.get('/notificacoes'); } catch {}
+  renderNotificacoes(document.getElementById('main-content'));
+}
+
+async function marcarUmaLida(id) {
+  try { await API.patch(`/notificacoes/${id}/lida`, {}); } catch {}
+  const n = NOTIFICACOES.find(x => String(x.id) === String(id));
+  if (n) n.lida = true;
+  // Recarrega da API
+  try { NOTIFICACOES = await API.get('/notificacoes'); } catch {}
+  const count = NOTIFICACOES.filter(n => !n.lida).length;
+  const badge = document.getElementById('notif-count');
+  if (badge) { badge.textContent = count; badge.style.display = count > 0 ? 'inline-block' : 'none'; }
+  const dashBadge = document.getElementById('dash-notif-badge');
+  if (dashBadge) { dashBadge.textContent = count; dashBadge.style.display = count > 0 ? 'inline-block' : 'none'; }
+  if (currentPage === 'notificacoes') renderNotificacoes(document.getElementById('main-content'));
+}
+
+
+// ── FOLGA PELO ADMIN ──────────────────────────────────────────────────────────
+function abrirModalFolgaAdmin(medicoId) {
+  const sel = document.getElementById('admin-folga-medico');
+  if (sel) {
+    sel.innerHTML = MEDICOS.map(m => `<option value="${m.id}" ${m.id===medicoId?'selected':''}>${m.nome}</option>`).join('');
+  }
+  // Data mínima = hoje
+  const hoje = new Date().toISOString().split('T')[0];
+  const ini = document.getElementById('admin-folga-inicio');
+  const fim = document.getElementById('admin-folga-fim');
+  if (ini) { ini.value = ''; ini.min = hoje; }
+  if (fim) { fim.value = ''; fim.min = hoje; }
+  openModal('modal-admin-folga');
+}
+
+async function registarFolgaAdmin() {
+  const medicoId = document.getElementById('admin-folga-medico').value;
+  const inicio   = document.getElementById('admin-folga-inicio').value;
+  const fim      = document.getElementById('admin-folga-fim').value || inicio;
+  const motivo   = document.getElementById('admin-folga-motivo').value;
+  const notas    = document.getElementById('admin-folga-notas').value;
+
+  if (!medicoId) return toast('Seleciona um médico.', 'warning');
+  if (!inicio)   return toast('Seleciona a data de início.', 'warning');
+
+  try {
+    await API.post(`/medicos/${medicoId}/folgas`, { inicio, fim, motivo, notas });
+    const medico = MEDICOS.find(m => m.id === medicoId);
+    toast(`Folga de ${medico?.nome||'médico'} registada. Agenda bloqueada e médico notificado.`, 'success');
+    closeModal('modal-admin-folga');
+    // Refrescar se estiver na página de folgas
+    if (currentPage === 'folgas') showPage('folgas');
+    await carregarNotificacoes();
+  } catch(e) { toast(e.message || 'Erro ao registar folga.', 'error'); }
+}
 
 // ── Demo data ─────────────────────────────────────────────────────────────────
 const DEMO_MEDICOS = [
@@ -510,3 +625,29 @@ const DEMO_MEDICOS = [
   { id:'med_costa',   nome:'Dra. Marta Costa', especialidade:'Estética',            iniciais:'MC', cor:{bg:'#FAEEDA',text:'#633806'}, stats:{consultasHoje:7,slotsLivres:4,ocupacao:55,pacientesTotal:2} },
   { id:'med_silva',   nome:'Dr. Rui Silva',    especialidade:'Pediatria',           iniciais:'RS', cor:{bg:'#FBEAF0',text:'#72243E'}, stats:{consultasHoje:7,slotsLivres:1,ocupacao:87,pacientesTotal:3} },
 ];
+
+// ── REMOVER MÉDICO ────────────────────────────────────────────────────────────
+let MEDICO_A_REMOVER = null;
+
+function abrirRemoverMedico(id) {
+  const m = MEDICOS.find(x => x.id === id);
+  if (!m) return;
+  MEDICO_A_REMOVER = m;
+  document.getElementById('remover-nome-medico').textContent = m.nome;
+  document.getElementById('remover-confirm-input').value = '';
+  openModal('modal-remover-medico');
+}
+
+async function confirmarRemoverMedico() {
+  if (!MEDICO_A_REMOVER) return;
+  const input = document.getElementById('remover-confirm-input').value.trim();
+  if (input !== MEDICO_A_REMOVER.nome) return toast('O nome não corresponde. Escreve exatamente o nome do médico.', 'warning');
+  try {
+    await API.patch(`/medicos/${MEDICO_A_REMOVER.id}`, { ativo: false });
+    toast(`${MEDICO_A_REMOVER.nome} removido. Todos os acessos revogados.`, 'success');
+    closeModal('modal-remover-medico');
+    MEDICO_A_REMOVER = null;
+    await carregarMedicos();
+    if (currentPage === 'dashboard') showPage('dashboard');
+  } catch(e) { toast(e.message || 'Erro ao remover médico.', 'error'); }
+}
