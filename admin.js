@@ -253,7 +253,7 @@ async function carregarMedicoData(m) {
         <span class="slot-hora">${s.hora}</span>
         <div class="slot-dot ${dotClass}"></div>
         <div style="flex:1">
-          <div class="slot-name" style="${isFree?'color:var(--text-secondary)';''}">${isFree?'— Disponível —':(s.marcacao?.pacienteNome||'Marcação')}</div>
+          <div class="slot-name" style="${isFree?'color:var(--text-secondary)':''}">${isFree?'— Disponível —':(s.marcacao?.pacienteNome||'Marcação')}</div>
           ${s.marcacao ? `<div class="slot-type">${s.marcacao.servico}</div>` : ''}
         </div>
         <div class="slot-actions">
