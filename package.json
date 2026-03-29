@@ -3,11 +3,10 @@
   "version": "1.0.0",
   "description": "Secretária Virtual IA para Clínica Dentária — DentalStar Felgueiras",
   "type": "module",
-  "main": "backend/server.js",
+  "main": "server.js",
   "scripts": {
-    "start":   "node backend/server.js",
-    "dev":     "node --watch backend/server.js",
-    "setup":   "npm install && cp backend/.env.example backend/.env && echo '\n✅ Edita backend/.env com as tuas chaves antes de iniciar!'"
+    "start": "node server.js",
+    "dev":   "node --watch server.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
@@ -17,6 +16,7 @@
     "jsonwebtoken":      "^9.0.2",
     "node-cron":         "^3.0.3",
     "node-fetch":        "^3.3.2",
+    "pg":                "^8.11.3",
     "twilio":            "^5.0.0"
   },
   "engines": { "node": ">=18.0.0" }
