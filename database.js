@@ -1,16 +1,34 @@
 /**
- * database.js — Camada de dados VozClinic
- * JSON persistido em ficheiro local. Substituível por PostgreSQL.
+ * database.js — Camada de dados VozClinic com PostgreSQL
+ * Usa a variável DATABASE_URL do Railway
  */
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
+import pg from "pg";
 import bcrypt from "bcryptjs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = path.join(__dirname, "data.json");
+const { Pool } = pg;
 
-// ─── Cores dos médicos ────────────────────────────────────────────────────────
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL?.includes("railway.internal")
+    ? false
+    : { rejectUnauthorized: false },
+});
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function uid(prefixo = "id") {
+  return `${prefixo}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function dataFormatada(data) {
+  return new Date(data + "T00:00:00").toLocaleDateString("pt-PT", {
+    weekday: "long", day: "numeric", month: "long",
+  });
+}
+
+const HORAS_MANHA = ["09:00","09:30","10:00","10:30","11:00","11:30","12:00","12:30"];
+const HORAS_TARDE = ["14:00","14:30","15:00","15:30","16:00","16:30","17:00","17:30"];
+const TODOS_SLOTS = [...HORAS_MANHA, ...HORAS_TARDE];
+
 const CORES = {
   blue:  { bg:"#E6F1FB", text:"#0C447C" },
   green: { bg:"#E1F5EE", text:"#085041" },
@@ -18,62 +36,118 @@ const CORES = {
   pink:  { bg:"#FBEAF0", text:"#72243E" },
 };
 
-// ─── Estado em memória ────────────────────────────────────────────────────────
-let state = {
-  medicos:       [],
-  pacientes:     [],
-  chamadas:      [],
-  marcacoes:     [],
-  campanhas:     [],
-  folgas:        [],
-  notificacoes:  [],
-  notas:         {},
-  agenda:        {},
-  sessoes:       {},  // não persistido
-};
+// Sessões em memória (não persistidas)
+const sessoes = {};
 
-// ─── Persistência ─────────────────────────────────────────────────────────────
-function salvar() {
-  const { sessoes, ...persistivel } = state;
-  fs.writeFileSync(DB_PATH, JSON.stringify(persistivel, null, 2));
-}
+// ─── Criação de tabelas ───────────────────────────────────────────────────────
+async function criarTabelas() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS medicos (
+      id TEXT PRIMARY KEY,
+      nome TEXT NOT NULL,
+      especialidade TEXT,
+      email TEXT UNIQUE NOT NULL,
+      senha_hash TEXT NOT NULL,
+      iniciais TEXT,
+      cor JSONB,
+      horario TEXT,
+      ativo BOOLEAN DEFAULT true,
+      criado_em TIMESTAMPTZ DEFAULT NOW()
+    );
 
-function carregar() {
-  if (fs.existsSync(DB_PATH)) {
-    try {
-      const data = JSON.parse(fs.readFileSync(DB_PATH, "utf8"));
-      state = { ...state, ...data, sessoes: {} };
-      return true;
-    } catch { return false; }
-  }
-  return false;
-}
+    CREATE TABLE IF NOT EXISTS pacientes (
+      id TEXT PRIMARY KEY,
+      nome TEXT NOT NULL,
+      telefone TEXT,
+      email TEXT,
+      idioma TEXT DEFAULT 'pt',
+      medico_id TEXT,
+      data_nascimento TEXT,
+      nif TEXT,
+      subsistema TEXT,
+      visitas INTEGER DEFAULT 0,
+      ultima_consulta TIMESTAMPTZ,
+      obs TEXT,
+      criado_em TIMESTAMPTZ DEFAULT NOW()
+    );
 
-// ─── Geração de agenda ────────────────────────────────────────────────────────
-const HORAS_MANHA = ["09:00","09:30","10:00","10:30","11:00","11:30","12:00","12:30"];
-const HORAS_TARDE = ["14:00","14:30","15:00","15:30","16:00","16:30","17:00","17:30"];
-const TODOS_SLOTS  = [...HORAS_MANHA, ...HORAS_TARDE];
+    CREATE TABLE IF NOT EXISTS marcacoes (
+      id TEXT PRIMARY KEY,
+      medico_id TEXT,
+      paciente_id TEXT,
+      paciente_nome TEXT,
+      telefone TEXT,
+      data TEXT,
+      hora TEXT,
+      servico TEXT,
+      status TEXT DEFAULT 'pendente',
+      idioma TEXT DEFAULT 'pt',
+      origem TEXT DEFAULT 'manual',
+      notas TEXT,
+      minutos_atraso INTEGER DEFAULT 0,
+      sms_enviado TEXT[] DEFAULT '{}',
+      call_sid TEXT,
+      criado_em TIMESTAMPTZ DEFAULT NOW()
+    );
 
-function gerarAgendaMedico(medicoId, data) {
-  const chave = `${medicoId}_${data}`;
-  if (!state.agenda[chave]) {
-    const slots = {};
-    TODOS_SLOTS.forEach(h => { slots[h] = "livre"; });
-    state.agenda[chave] = slots;
-  }
-  return state.agenda[chave];
-}
+    CREATE TABLE IF NOT EXISTS folgas (
+      id TEXT PRIMARY KEY,
+      medico_id TEXT,
+      inicio TEXT,
+      fim TEXT,
+      motivo TEXT,
+      notas TEXT,
+      registada_por TEXT DEFAULT 'medico',
+      criado_em TIMESTAMPTZ DEFAULT NOW()
+    );
 
-function gerarAgendaProximos60Dias() {
-  const hoje = new Date();
-  for (let i = 0; i <= 60; i++) {
-    const d = new Date(hoje);
-    d.setDate(d.getDate() + i);
-    const diaSemana = d.getDay();
-    if (diaSemana === 0 || diaSemana === 6) continue; // fim de semana
-    const data = d.toISOString().split("T")[0];
-    state.medicos.forEach(m => gerarAgendaMedico(m.id, data));
-  }
+    CREATE TABLE IF NOT EXISTS notificacoes (
+      id TEXT PRIMARY KEY,
+      tipo TEXT,
+      urgencia TEXT DEFAULT 'baixa',
+      medico_nome TEXT,
+      para_medico_id TEXT,
+      msg TEXT,
+      lida BOOLEAN DEFAULT false,
+      criado_em TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS chamadas (
+      id TEXT PRIMARY KEY,
+      call_sid TEXT UNIQUE,
+      "from" TEXT,
+      tipo TEXT,
+      status TEXT DEFAULT 'iniciada',
+      duracao INTEGER DEFAULT 0,
+      inicio TIMESTAMPTZ,
+      fim TIMESTAMPTZ
+    );
+
+    CREATE TABLE IF NOT EXISTS notas (
+      medico_id TEXT,
+      data TEXT,
+      conteudo TEXT,
+      PRIMARY KEY (medico_id, data)
+    );
+
+    CREATE TABLE IF NOT EXISTS campanhas (
+      id TEXT PRIMARY KEY,
+      promocao TEXT,
+      total INTEGER,
+      idioma TEXT,
+      medico_id TEXT,
+      tipo TEXT,
+      criado_em TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS agenda (
+      medico_id TEXT,
+      data TEXT,
+      hora TEXT,
+      estado TEXT DEFAULT 'livre',
+      PRIMARY KEY (medico_id, data, hora)
+    );
+  `);
 }
 
 // ─── Seed de demonstração ─────────────────────────────────────────────────────
@@ -82,183 +156,132 @@ async function seed() {
   const hoje = new Date().toISOString().split("T")[0];
   const amanha = new Date(Date.now() + 86400000).toISOString().split("T")[0];
 
-  state.medicos = [
-    { id:"med_fonseca", nome:"Dra. Ana Fonseca", especialidade:"Ortodontia & Geral",
-      email:"fonseca@dentalstar.pt", senhaHash:hash, iniciais:"AF", cor:CORES.blue,
-      horario:"Segunda a Sexta, 09:00–18:00", ativo:true, criadoEm:"2026-01-01T00:00:00Z" },
-    { id:"med_ramos", nome:"Dr. Pedro Ramos", especialidade:"Implantologia",
-      email:"ramos@dentalstar.pt", senhaHash:hash, iniciais:"PR", cor:CORES.green,
-      horario:"Segunda a Sexta, 09:00–18:00", ativo:true, criadoEm:"2026-01-01T00:00:00Z" },
-    { id:"med_costa", nome:"Dra. Marta Costa", especialidade:"Estética & Branqueamento",
-      email:"costa@dentalstar.pt", senhaHash:hash, iniciais:"MC", cor:CORES.amber,
-      horario:"Segunda a Sexta, 09:00–18:00", ativo:true, criadoEm:"2026-01-01T00:00:00Z" },
-    { id:"med_silva", nome:"Dr. Rui Silva", especialidade:"Pediatria Dentária",
-      email:"silva@dentalstar.pt", senhaHash:hash, iniciais:"RS", cor:CORES.pink,
-      horario:"Segunda a Sexta, 09:00–18:00", ativo:true, criadoEm:"2026-01-01T00:00:00Z" },
+  const medicos = [
+    { id:"med_fonseca", nome:"Dra. Ana Fonseca", especialidade:"Ortodontia & Geral", email:"fonseca@dentalstar.pt", cor: CORES.blue, iniciais:"AF" },
+    { id:"med_ramos",   nome:"Dr. Pedro Ramos",  especialidade:"Implantologia",       email:"ramos@dentalstar.pt",   cor: CORES.green, iniciais:"PR" },
+    { id:"med_costa",   nome:"Dra. Marta Costa", especialidade:"Estética & Branqueamento", email:"costa@dentalstar.pt", cor: CORES.amber, iniciais:"MC" },
+    { id:"med_silva",   nome:"Dr. Rui Silva",    especialidade:"Pediatria Dentária",  email:"silva@dentalstar.pt",   cor: CORES.pink, iniciais:"RS" },
   ];
 
-  state.pacientes = [
-    { id:"pac_001", nome:"Maria Silva", telefone:"+351912345678", email:"maria@email.pt",
-      idioma:"pt", medicoId:"med_fonseca", dataNascimento:"1985-04-12", nif:"234567890",
-      subsistema:"ADSE", visitas:7, ultimaConsulta:"2026-03-01T09:00:00Z",
-      obs:"Alergia a anestesia com epinefrina.", criadoEm:"2026-01-01T00:00:00Z" },
-    { id:"pac_002", nome:"João Matos", telefone:"+351963456789", email:"joao@email.pt",
-      idioma:"pt", medicoId:"med_fonseca", dataNascimento:"1990-08-22", nif:"",
-      subsistema:"Privado", visitas:3, ultimaConsulta:"2026-02-15T10:00:00Z",
-      obs:"", criadoEm:"2026-01-15T00:00:00Z" },
-    { id:"pac_003", nome:"Carlos Ramos", telefone:"+351934567890", email:"carlos@email.pt",
-      idioma:"pt", medicoId:"med_ramos", dataNascimento:"1978-11-05", nif:"345678901",
-      subsistema:"SNS", visitas:12, ultimaConsulta:"2026-03-10T14:00:00Z",
-      obs:"Ansiedade dentária. Prefer sedação consciente.", criadoEm:"2025-12-01T00:00:00Z" },
-    { id:"pac_004", nome:"Sarah Connor", telefone:"+447700900000", email:"sarah@email.co.uk",
-      idioma:"en", medicoId:"med_ramos", dataNascimento:"1988-06-18", nif:"",
-      subsistema:"Privado", visitas:2, ultimaConsulta:"2026-03-05T11:00:00Z",
-      obs:"", criadoEm:"2026-02-01T00:00:00Z" },
-    { id:"pac_005", nome:"Sophie Laurent", telefone:"+33612345678", email:"sophie@email.fr",
-      idioma:"fr", medicoId:"med_costa", dataNascimento:"1992-03-30", nif:"",
-      subsistema:"Privado", visitas:4, ultimaConsulta:"2026-03-08T09:30:00Z",
-      obs:"", criadoEm:"2026-01-20T00:00:00Z" },
-    { id:"pac_006", nome:"Ana Ferreira", telefone:"+351965432100", email:"ana@email.pt",
-      idioma:"pt", medicoId:"med_costa", dataNascimento:"1995-07-14", nif:"456789012",
-      subsistema:"Médis", visitas:5, ultimaConsulta:"2026-03-12T15:00:00Z",
-      obs:"", criadoEm:"2026-01-10T00:00:00Z" },
-    { id:"pac_007", nome:"Tiago Nunes", telefone:"+351911222333", email:"tiago@email.pt",
-      idioma:"pt", medicoId:"med_costa", dataNascimento:"1982-09-25", nif:"567890123",
-      subsistema:"ADSE", visitas:8, ultimaConsulta:"2026-03-18T10:00:00Z",
-      obs:"", criadoEm:"2025-11-01T00:00:00Z" },
-    { id:"pac_008", nome:"Rita Pinto", telefone:"+351966778899", email:"rita@email.pt",
-      idioma:"pt", medicoId:"med_silva", dataNascimento:"2010-01-08", nif:"",
-      subsistema:"SNS", visitas:6, ultimaConsulta:"2026-02-28T09:00:00Z",
-      obs:"Paciente pediátrico.", criadoEm:"2025-12-15T00:00:00Z" },
-    { id:"pac_009", nome:"Marco Rossi", telefone:"+393331234567", email:"marco@email.it",
-      idioma:"it", medicoId:"med_silva", dataNascimento:"2008-05-12", nif:"",
-      subsistema:"Privado", visitas:1, ultimaConsulta:null,
-      obs:"", criadoEm:"2026-03-01T00:00:00Z" },
-    { id:"pac_010", nome:"Pedro Gomes", telefone:"+351988776655", email:"pedro@email.pt",
-      idioma:"pt", medicoId:"med_fonseca", dataNascimento:"1975-12-03", nif:"678901234",
-      subsistema:"AdvanceCare", visitas:10, ultimaConsulta:"2026-03-20T14:30:00Z",
-      obs:"", criadoEm:"2025-10-01T00:00:00Z" },
-  ];
-
-  // Gera agenda
-  gerarAgendaProximos60Dias();
-
-  // Marcações de hoje com estados variados
-  const marcacoesHoje = [
-    { id:"marc_001", medicoId:"med_fonseca", pacienteId:"pac_001", pacienteNome:"Maria Silva",
-      telefone:"+351912345678", data:hoje, hora:"09:00", servico:"Higiene oral",
-      status:"realizada", idioma:"pt", origem:"manual", notas:"Sem cáries. Higiene excelente.",
-      smsEnviado:[], criadoEm:hoje+"T08:00:00Z" },
-    { id:"marc_002", medicoId:"med_fonseca", pacienteId:"pac_002", pacienteNome:"João Matos",
-      telefone:"+351963456789", data:hoje, hora:"09:30", servico:"Consulta rotina",
-      status:"realizada", idioma:"pt", origem:"ia", notas:"",
-      smsEnviado:[], criadoEm:hoje+"T08:00:00Z" },
-    { id:"marc_003", medicoId:"med_fonseca", pacienteId:"pac_010", pacienteNome:"Pedro Gomes",
-      telefone:"+351988776655", data:hoje, hora:"10:00", servico:"Ortodontia",
-      status:"em_curso", idioma:"pt", origem:"ia", notas:"",
-      smsEnviado:[], criadoEm:hoje+"T08:00:00Z" },
-    { id:"marc_004", medicoId:"med_ramos", pacienteId:"pac_003", pacienteNome:"Carlos Ramos",
-      telefone:"+351934567890", data:hoje, hora:"09:00", servico:"Implante — consulta",
-      status:"realizada", idioma:"pt", origem:"manual", notas:"",
-      smsEnviado:[], criadoEm:hoje+"T08:00:00Z" },
-    { id:"marc_005", medicoId:"med_ramos", pacienteId:"pac_004", pacienteNome:"Sarah Connor",
-      telefone:"+447700900000", data:hoje, hora:"10:00", servico:"Check-up",
-      status:"pendente", idioma:"en", origem:"ia", notas:"",
-      smsEnviado:[], criadoEm:hoje+"T08:00:00Z" },
-    { id:"marc_006", medicoId:"med_costa", pacienteId:"pac_005", pacienteNome:"Sophie Laurent",
-      telefone:"+33612345678", data:hoje, hora:"09:00", servico:"Branqueamento",
-      status:"realizada", idioma:"fr", origem:"ia", notas:"",
-      smsEnviado:[], criadoEm:hoje+"T08:00:00Z" },
-    { id:"marc_007", medicoId:"med_costa", pacienteId:"pac_006", pacienteNome:"Ana Ferreira",
-      telefone:"+351965432100", data:hoje, hora:"10:30", servico:"Higiene oral",
-      status:"pendente", idioma:"pt", origem:"manual", notas:"",
-      smsEnviado:[], criadoEm:hoje+"T08:00:00Z" },
-    { id:"marc_008", medicoId:"med_silva", pacienteId:"pac_008", pacienteNome:"Rita Pinto",
-      telefone:"+351966778899", data:hoje, hora:"09:00", servico:"Selantes",
-      status:"realizada", idioma:"pt", origem:"manual", notas:"Selantes aplicados em molares.",
-      smsEnviado:[], criadoEm:hoje+"T08:00:00Z" },
-    { id:"marc_009", medicoId:"med_silva", pacienteId:"pac_009", pacienteNome:"Marco Rossi",
-      telefone:"+393331234567", data:hoje, hora:"10:00", servico:"Consulta rotina",
-      status:"falta", idioma:"it", origem:"ia", notas:"",
-      smsEnviado:[], criadoEm:hoje+"T08:00:00Z" },
-  ];
-
-  state.marcacoes = marcacoesHoje;
-
-  // Ocupar slots na agenda
-  for (const m of marcacoesHoje) {
-    const chave = `${m.medicoId}_${m.data}`;
-    if (state.agenda[chave]) state.agenda[chave][m.hora] = m.status === "cancelada" ? "livre" : "ocupado";
+  for (const m of medicos) {
+    await pool.query(`
+      INSERT INTO medicos (id, nome, especialidade, email, senha_hash, iniciais, cor, horario, ativo)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true) ON CONFLICT (id) DO NOTHING`,
+      [m.id, m.nome, m.especialidade, m.email, hash, m.iniciais, JSON.stringify(m.cor), "Segunda a Sexta, 09:00–18:00"]
+    );
   }
 
-  // Folga demo: Dr. Ramos amanhã
-  state.folgas = [{
-    id:"folga_001", medicoId:"med_ramos",
-    inicio: amanha, fim: amanha, motivo:"Formação", notas:"Congresso Lisboa",
-    criadoEm: hoje+"T07:00:00Z",
-  }];
-  // Bloquear agenda da folga
-  const chaveRamosAmanha = `med_ramos_${amanha}`;
-  if (!state.agenda[chaveRamosAmanha]) gerarAgendaMedico("med_ramos", amanha);
-  TODOS_SLOTS.forEach(h => { state.agenda[chaveRamosAmanha][h] = "folga"; });
-
-  // Notificações demo
-  state.notificacoes = [
-    { id:"notif_001", tipo:"falta", urgencia:"alta", medicoNome:"Dr. Pedro Ramos",
-      msg:"Marco Rossi não compareceu à consulta das 10:00 com Dr. Silva.", lida:false,
-      criadoEm: new Date().toISOString() },
-    { id:"notif_002", tipo:"ia", urgencia:"baixa", medicoNome:"Vários",
-      msg:"Sofia (IA) marcou 3 consultas via chamada nas últimas 2h.", lida:false,
-      criadoEm: new Date(Date.now()-7200000).toISOString() },
-    { id:"notif_003", tipo:"folga", urgencia:"media", medicoNome:"Dr. Pedro Ramos",
-      msg:`Dr. Pedro Ramos registou folga para ${amanha} (Formação). Agenda bloqueada.`, lida:true,
-      criadoEm: new Date(Date.now()-86400000).toISOString() },
+  const pacientes = [
+    { id:"pac_001", nome:"Maria Silva",   telefone:"+351912345678", email:"maria@email.pt",   idioma:"pt", medicoId:"med_fonseca", obs:"Alergia a anestesia com epinefrina." },
+    { id:"pac_002", nome:"João Matos",    telefone:"+351963456789", email:"joao@email.pt",    idioma:"pt", medicoId:"med_fonseca", obs:"" },
+    { id:"pac_003", nome:"Carlos Ramos",  telefone:"+351934567890", email:"carlos@email.pt",  idioma:"pt", medicoId:"med_ramos",   obs:"Ansiedade dentária." },
+    { id:"pac_004", nome:"Sarah Connor",  telefone:"+447700900000", email:"sarah@email.co.uk", idioma:"en", medicoId:"med_ramos",  obs:"" },
+    { id:"pac_005", nome:"Sophie Laurent",telefone:"+33612345678",  email:"sophie@email.fr",  idioma:"fr", medicoId:"med_costa",  obs:"" },
+    { id:"pac_006", nome:"Ana Ferreira",  telefone:"+351965432100", email:"ana@email.pt",     idioma:"pt", medicoId:"med_costa",  obs:"" },
+    { id:"pac_007", nome:"Tiago Nunes",   telefone:"+351911222333", email:"tiago@email.pt",   idioma:"pt", medicoId:"med_costa",  obs:"" },
+    { id:"pac_008", nome:"Rita Pinto",    telefone:"+351966778899", email:"rita@email.pt",    idioma:"pt", medicoId:"med_silva",  obs:"Paciente pediátrico." },
+    { id:"pac_009", nome:"Marco Rossi",   telefone:"+393331234567", email:"marco@email.it",   idioma:"it", medicoId:"med_silva",  obs:"" },
+    { id:"pac_010", nome:"Pedro Gomes",   telefone:"+351988776655", email:"pedro@email.pt",   idioma:"pt", medicoId:"med_fonseca", obs:"" },
   ];
 
-  salvar();
-  console.log("✅ Seed de demonstração criado.");
+  for (const p of pacientes) {
+    await pool.query(`
+      INSERT INTO pacientes (id, nome, telefone, email, idioma, medico_id, obs, visitas)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING`,
+      [p.id, p.nome, p.telefone, p.email, p.idioma, p.medicoId, p.obs, Math.floor(Math.random()*10)+1]
+    );
+  }
+
+  // Agenda dos próximos 60 dias
+  await gerarAgendaBD(medicos.map(m => m.id));
+
+  // Marcações de hoje
+  const marcacoes = [
+    { id:"marc_001", medicoId:"med_fonseca", pacienteId:"pac_001", pacienteNome:"Maria Silva",   telefone:"+351912345678", hora:"09:00", servico:"Higiene oral",       status:"realizada", idioma:"pt", origem:"manual" },
+    { id:"marc_002", medicoId:"med_fonseca", pacienteId:"pac_002", pacienteNome:"João Matos",    telefone:"+351963456789", hora:"09:30", servico:"Consulta rotina",     status:"realizada", idioma:"pt", origem:"ia" },
+    { id:"marc_003", medicoId:"med_fonseca", pacienteId:"pac_010", pacienteNome:"Pedro Gomes",   telefone:"+351988776655", hora:"10:00", servico:"Ortodontia",          status:"em_curso",  idioma:"pt", origem:"ia" },
+    { id:"marc_004", medicoId:"med_ramos",   pacienteId:"pac_003", pacienteNome:"Carlos Ramos",  telefone:"+351934567890", hora:"09:00", servico:"Implante — consulta", status:"realizada", idioma:"pt", origem:"manual" },
+    { id:"marc_005", medicoId:"med_ramos",   pacienteId:"pac_004", pacienteNome:"Sarah Connor",  telefone:"+447700900000", hora:"10:00", servico:"Check-up",           status:"pendente",  idioma:"en", origem:"ia" },
+    { id:"marc_006", medicoId:"med_costa",   pacienteId:"pac_005", pacienteNome:"Sophie Laurent",telefone:"+33612345678",  hora:"09:00", servico:"Branqueamento",      status:"realizada", idioma:"fr", origem:"ia" },
+    { id:"marc_007", medicoId:"med_costa",   pacienteId:"pac_006", pacienteNome:"Ana Ferreira",  telefone:"+351965432100", hora:"10:30", servico:"Higiene oral",       status:"pendente",  idioma:"pt", origem:"manual" },
+    { id:"marc_008", medicoId:"med_silva",   pacienteId:"pac_008", pacienteNome:"Rita Pinto",    telefone:"+351966778899", hora:"09:00", servico:"Selantes",           status:"realizada", idioma:"pt", origem:"manual" },
+    { id:"marc_009", medicoId:"med_silva",   pacienteId:"pac_009", pacienteNome:"Marco Rossi",   telefone:"+393331234567", hora:"10:00", servico:"Consulta rotina",    status:"falta",     idioma:"it", origem:"ia" },
+  ];
+
+  for (const m of marcacoes) {
+    await pool.query(`
+      INSERT INTO marcacoes (id, medico_id, paciente_id, paciente_nome, telefone, data, hora, servico, status, idioma, origem)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO NOTHING`,
+      [m.id, m.medicoId, m.pacienteId, m.pacienteNome, m.telefone, hoje, m.hora, m.servico, m.status, m.idioma, m.origem]
+    );
+    // Ocupar slot
+    await pool.query(
+      `UPDATE agenda SET estado='ocupado' WHERE medico_id=$1 AND data=$2 AND hora=$3`,
+      [m.medicoId, hoje, m.hora]
+    );
+  }
+
+  // Folga demo
+  await pool.query(`
+    INSERT INTO folgas (id, medico_id, inicio, fim, motivo, notas)
+    VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (id) DO NOTHING`,
+    ["folga_001", "med_ramos", amanha, amanha, "Formação", "Congresso Lisboa"]
+  );
+  await pool.query(
+    `UPDATE agenda SET estado='folga' WHERE medico_id='med_ramos' AND data=$1`,
+    [amanha]
+  );
+
+  // Notificações demo
+  await pool.query(`
+    INSERT INTO notificacoes (id, tipo, urgencia, medico_nome, msg)
+    VALUES
+      ('notif_001','falta','alta','Dr. Rui Silva','Marco Rossi não compareceu à consulta das 10:00 com Dr. Silva.'),
+      ('notif_002','ia','baixa','Vários','Sofia (IA) marcou 3 consultas via chamada nas últimas 2h.')
+    ON CONFLICT (id) DO NOTHING`
+  );
+
+  console.log("✅ Seed PostgreSQL criado.");
+}
+
+async function gerarAgendaBD(medicoIds) {
+  const valores = [];
+  const hoje = new Date();
+  for (let i = 0; i <= 60; i++) {
+    const d = new Date(hoje);
+    d.setDate(d.getDate() + i);
+    if (d.getDay() === 0 || d.getDay() === 6) continue;
+    const data = d.toISOString().split("T")[0];
+    for (const medicoId of medicoIds) {
+      for (const hora of TODOS_SLOTS) {
+        valores.push(`('${medicoId}','${data}','${hora}','livre')`);
+      }
+    }
+  }
+  if (valores.length) {
+    // Inserir em lotes de 500
+    for (let i = 0; i < valores.length; i += 500) {
+      const lote = valores.slice(i, i + 500).join(",");
+      await pool.query(
+        `INSERT INTO agenda (medico_id, data, hora, estado) VALUES ${lote} ON CONFLICT DO NOTHING`
+      );
+    }
+  }
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
-  const carregou = carregar();
-  if (!carregou || state.medicos.length === 0) {
-    console.log("📦 DB vazio — a criar seed de demonstração...");
+  await criarTabelas();
+  const { rows } = await pool.query("SELECT COUNT(*) FROM medicos");
+  if (parseInt(rows[0].count) === 0) {
+    console.log("📦 DB vazio — a criar seed...");
     await seed();
   } else {
-    // Garantir que agenda tem os próximos 60 dias
-    gerarAgendaProximos60Dias();
-    // Sincronizar marcações existentes com agenda
-    for (const m of state.marcacoes) {
-      if (m.status !== "cancelada") {
-        const chave = `${m.medicoId}_${m.data}`;
-        if (state.agenda[chave] && state.agenda[chave][m.hora] === "livre") {
-          state.agenda[chave][m.hora] = "ocupado";
-        }
-      }
-    }
-    // Sincronizar folgas existentes
-    for (const f of state.folgas) {
-      const inicio = new Date(f.inicio+"T00:00:00");
-      const fim    = new Date((f.fim||f.inicio)+"T00:00:00");
-      for (let d = new Date(inicio); d <= fim; d.setDate(d.getDate()+1)) {
-        const data = d.toISOString().split("T")[0];
-        const chave = `${f.medicoId}_${data}`;
-        if (!state.agenda[chave]) gerarAgendaMedico(f.medicoId, data);
-        TODOS_SLOTS.forEach(h => { state.agenda[chave][h] = "folga"; });
-      }
-    }
-    console.log("✅ DB carregado.");
+    // Garantir agenda para os próximos 60 dias
+    const { rows: meds } = await pool.query("SELECT id FROM medicos WHERE ativo=true");
+    await gerarAgendaBD(meds.map(m => m.id));
+    console.log("✅ PostgreSQL carregado.");
   }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Helpers internos
-// ─────────────────────────────────────────────────────────────────────────────
-function uid(prefixo = "id") { return `${prefixo}_${Date.now()}_${Math.random().toString(36).slice(2,7)}`; }
-
-function dataFormatada(data) {
-  return new Date(data+"T00:00:00").toLocaleDateString("pt-PT", { weekday:"long", day:"numeric", month:"long" });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -267,365 +290,440 @@ function dataFormatada(data) {
 export const db = {
 
   // ── Médicos ──────────────────────────────────────────────────────────────
-  getMedicos() { return state.medicos.filter(m => m.ativo !== false); },
-  getMedico(id) { return state.medicos.find(m => m.id === id); },
-  getMedicoPorEmail(email) { return state.medicos.find(m => m.email === email?.toLowerCase()); },
-
-  criarMedico(dados) {
-    const m = { id: uid("med"), ativo:true, criadoEm: new Date().toISOString(), ...dados };
-    state.medicos.push(m);
-    gerarAgendaProximos60Dias();
-    salvar();
-    return m;
+  async getMedicos() {
+    const { rows } = await pool.query("SELECT * FROM medicos WHERE ativo=true ORDER BY criado_em");
+    return rows.map(r => ({ ...r, id: r.id, nome: r.nome, especialidade: r.especialidade, email: r.email, iniciais: r.iniciais, cor: r.cor, horario: r.horario, ativo: r.ativo }));
   },
 
-  atualizarMedico(id, dados) {
-    const i = state.medicos.findIndex(m => m.id === id);
-    if (i === -1) return null;
-    state.medicos[i] = { ...state.medicos[i], ...dados };
-    salvar();
-    return state.medicos[i];
+  async getMedico(id) {
+    const { rows } = await pool.query("SELECT * FROM medicos WHERE id=$1", [id]);
+    return rows[0] || null;
   },
 
-  getMedicosComStats(data) {
-    return db.getMedicos().map(m => {
-      const marcacoesHoje = state.marcacoes.filter(x => x.medicoId === m.id && x.data === data);
-      const agenda = state.agenda[`${m.id}_${data}`] || {};
-      const totalSlots = Object.keys(agenda).length;
-      const livres = Object.values(agenda).filter(v => v === "livre").length;
-      const ocupados = totalSlots - livres;
+  async getMedicoPorEmail(email) {
+    const { rows } = await pool.query("SELECT * FROM medicos WHERE email=$1", [email?.toLowerCase()]);
+    return rows[0] || null;
+  },
+
+  async criarMedico(dados) {
+    const id = uid("med");
+    const { rows } = await pool.query(`
+      INSERT INTO medicos (id, nome, especialidade, email, senha_hash, iniciais, cor, horario, ativo)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true) RETURNING *`,
+      [id, dados.nome, dados.especialidade, dados.email?.toLowerCase(), dados.senhaHash, dados.iniciais, JSON.stringify(dados.cor), dados.horario]
+    );
+    await gerarAgendaBD([id]);
+    return rows[0];
+  },
+
+  async atualizarMedico(id, dados) {
+    const sets = [];
+    const vals = [];
+    let i = 1;
+    if (dados.nome)       { sets.push(`nome=$${i++}`);        vals.push(dados.nome); }
+    if (dados.especialidade) { sets.push(`especialidade=$${i++}`); vals.push(dados.especialidade); }
+    if (dados.horario)    { sets.push(`horario=$${i++}`);     vals.push(dados.horario); }
+    if (dados.ativo !== undefined) { sets.push(`ativo=$${i++}`); vals.push(dados.ativo); }
+    if (dados.cor)        { sets.push(`cor=$${i++}`);         vals.push(JSON.stringify(dados.cor)); }
+    if (dados.senhaHash)  { sets.push(`senha_hash=$${i++}`);  vals.push(dados.senhaHash); }
+    if (!sets.length) return null;
+    vals.push(id);
+    const { rows } = await pool.query(`UPDATE medicos SET ${sets.join(",")} WHERE id=$${i} RETURNING *`, vals);
+    return rows[0] || null;
+  },
+
+  async getMedicosComStats(data) {
+    const medicos = await db.getMedicos();
+    return Promise.all(medicos.map(async m => {
+      const { rows: ag } = await pool.query(
+        "SELECT estado, COUNT(*) FROM agenda WHERE medico_id=$1 AND data=$2 GROUP BY estado",
+        [m.id, data]
+      );
+      const livres   = parseInt(ag.find(r => r.estado === "livre")?.count || 0);
+      const ocupados = parseInt(ag.find(r => r.estado === "ocupado")?.count || 0);
+      const total    = livres + ocupados;
+      const { rows: pacs } = await pool.query("SELECT COUNT(*) FROM pacientes WHERE medico_id=$1", [m.id]);
       return {
-        ...m,
+        ...m, senhaHash: undefined,
         stats: {
           consultasHoje: ocupados,
           slotsLivres: livres,
-          pacientesTotal: state.pacientes.filter(p => p.medicoId === m.id).length,
-          ocupacao: totalSlots > 0 ? Math.round((ocupados / totalSlots) * 100) : 0,
+          pacientesTotal: parseInt(pacs[0].count),
+          ocupacao: total > 0 ? Math.round((ocupados / total) * 100) : 0,
         },
+      };
+    }));
+  },
+
+  // ── Pacientes ─────────────────────────────────────────────────────────────
+  async getPacientes(medicoId, pesquisa) {
+    let q = "SELECT * FROM pacientes WHERE 1=1";
+    const vals = [];
+    if (medicoId) { q += ` AND medico_id=$${vals.length+1}`; vals.push(medicoId); }
+    if (pesquisa) { q += ` AND (nome ILIKE $${vals.length+1} OR telefone ILIKE $${vals.length+1})`; vals.push(`%${pesquisa}%`); }
+    q += " ORDER BY nome";
+    const { rows } = await pool.query(q, vals);
+    return rows;
+  },
+
+  async getPaciente(id) {
+    const { rows } = await pool.query("SELECT * FROM pacientes WHERE id=$1", [id]);
+    return rows[0] || null;
+  },
+
+  async getPacientePorTelefone(tel) {
+    const { rows } = await pool.query("SELECT * FROM pacientes WHERE telefone=$1", [tel]);
+    return rows[0] || null;
+  },
+
+  async getPacienteCompleto(medicoId, pacienteId) {
+    const { rows } = await pool.query("SELECT * FROM pacientes WHERE id=$1 AND medico_id=$2", [pacienteId, medicoId]);
+    if (!rows[0]) return null;
+    const pac = rows[0];
+    const { rows: hist } = await pool.query(
+      "SELECT data, servico, status, notas FROM marcacoes WHERE paciente_id=$1 ORDER BY data DESC LIMIT 10", [pacienteId]
+    );
+    const { rows: calls } = await pool.query(
+      `SELECT inicio, duracao, status FROM chamadas WHERE "from"=$1 ORDER BY inicio DESC LIMIT 5`, [pac.telefone]
+    );
+    return { ...pac, historico: hist, chamadas: calls };
+  },
+
+  async criarPaciente(dados) {
+    const id = uid("pac");
+    const { rows } = await pool.query(`
+      INSERT INTO pacientes (id, nome, telefone, email, idioma, medico_id, data_nascimento, nif, subsistema, obs)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [id, dados.nome, dados.telefone, dados.email, dados.idioma||"pt", dados.medicoId, dados.dataNascimento, dados.nif, dados.subsistema, dados.obs]
+    );
+    return rows[0];
+  },
+
+  async atualizarPaciente(id, dados) {
+    const sets = []; const vals = []; let i = 1;
+    const campos = { nome:"nome", telefone:"telefone", email:"email", idioma:"idioma", obs:"obs", subsistema:"subsistema", nif:"nif" };
+    for (const [k, col] of Object.entries(campos)) {
+      if (dados[k] !== undefined) { sets.push(`${col}=$${i++}`); vals.push(dados[k]); }
+    }
+    if (!sets.length) return null;
+    vals.push(id);
+    const { rows } = await pool.query(`UPDATE pacientes SET ${sets.join(",")} WHERE id=$${i} RETURNING *`, vals);
+    return rows[0] || null;
+  },
+
+  // ── Agenda ────────────────────────────────────────────────────────────────
+  async getAgendaMedico(medicoId, data) {
+    const { rows } = await pool.query(
+      "SELECT hora, estado FROM agenda WHERE medico_id=$1 AND data=$2 ORDER BY hora",
+      [medicoId, data]
+    );
+    if (!rows.length) {
+      await gerarAgendaBD([medicoId]);
+      const { rows: r2 } = await pool.query(
+        "SELECT hora, estado FROM agenda WHERE medico_id=$1 AND data=$2 ORDER BY hora",
+        [medicoId, data]
+      );
+      return Object.fromEntries(r2.map(r => [r.hora, r.estado]));
+    }
+    return Object.fromEntries(rows.map(r => [r.hora, r.estado]));
+  },
+
+  async getAgendaEnriquecida(medicoId, data) {
+    await gerarAgendaBD([medicoId]);
+    const { rows: slots } = await pool.query(
+      "SELECT hora, estado FROM agenda WHERE medico_id=$1 AND data=$2 ORDER BY hora",
+      [medicoId, data]
+    );
+    const { rows: marcacoes } = await pool.query(
+      "SELECT * FROM marcacoes WHERE medico_id=$1 AND data=$2 AND status != 'cancelada'",
+      [medicoId, data]
+    );
+    return slots.map(s => {
+      const marcacao = marcacoes.find(m => m.hora === s.hora) || null;
+      return {
+        hora: s.hora,
+        estado: s.estado,
+        marcacao: marcacao ? {
+          id: marcacao.id, pacienteId: marcacao.paciente_id, pacienteNome: marcacao.paciente_nome,
+          servico: marcacao.servico, status: marcacao.status, idioma: marcacao.idioma,
+          notas: marcacao.notas, origem: marcacao.origem,
+        } : null,
       };
     });
   },
 
-  // ── Pacientes ─────────────────────────────────────────────────────────────
-  getPacientes(medicoId, pesquisa) {
-    let pacs = state.pacientes;
-    if (medicoId) pacs = pacs.filter(p => p.medicoId === medicoId);
-    if (pesquisa) {
-      const q = pesquisa.toLowerCase();
-      pacs = pacs.filter(p =>
-        p.nome.toLowerCase().includes(q) ||
-        (p.telefone||"").includes(q) ||
-        (p.email||"").toLowerCase().includes(q)
-      );
-    }
-    return pacs;
-  },
-
-  getPaciente(id) { return state.pacientes.find(p => p.id === id); },
-  getPacientePorTelefone(tel) { return state.pacientes.find(p => p.telefone === tel); },
-
-  getPacienteCompleto(medicoId, pacienteId) {
-    const pac = state.pacientes.find(p => p.id === pacienteId && p.medicoId === medicoId);
-    if (!pac) return null;
-    const historico = state.marcacoes
-      .filter(m => m.pacienteId === pacienteId && (m.status === "realizada" || m.status === "falta"))
-      .sort((a, b) => b.data.localeCompare(a.data))
-      .map(m => ({ data: m.data, servico: m.servico, status: m.status, notas: m.notas }));
-    const chamadas = state.chamadas
-      .filter(c => c.from === pac.telefone)
-      .slice(0, 5)
-      .map(c => ({ inicio: c.inicio, duracao: c.duracao, status: c.status }));
-    return { ...pac, historico, chamadas };
-  },
-
-  criarPaciente(dados) {
-    const p = { id: uid("pac"), visitas:0, criadoEm: new Date().toISOString(), ...dados };
-    state.pacientes.push(p);
-    salvar();
-    return p;
-  },
-
-  atualizarPaciente(id, dados) {
-    const i = state.pacientes.findIndex(p => p.id === id);
-    if (i === -1) return null;
-    state.pacientes[i] = { ...state.pacientes[i], ...dados };
-    salvar();
-    return state.pacientes[i];
-  },
-
-  // ── Agenda ────────────────────────────────────────────────────────────────
-  getAgendaMedico(medicoId, data) {
-    return state.agenda[`${medicoId}_${data}`] || gerarAgendaMedico(medicoId, data);
-  },
-
-  getAgendaEnriquecida(medicoId, data) {
-    const slots = db.getAgendaMedico(medicoId, data);
-    return TODOS_SLOTS.map(hora => {
-      const estado = slots[hora] || "livre";
-      const marcacao = estado === "ocupado"
-        ? state.marcacoes.find(m => m.medicoId === medicoId && m.data === data && m.hora === hora && m.status !== "cancelada")
-        : null;
-      return { hora, estado: marcacao?.status === "cancelada" ? "livre" : estado, marcacao: marcacao || null };
-    });
-  },
-
-  getAgendaSemana(medicoId) {
+  async getAgendaSemana(medicoId) {
     const result = [];
-    for (let i = 1; i <= 10; i++) {
-      const d = new Date();
-      d.setDate(d.getDate() + i);
+    for (let i = 1; i <= 14; i++) {
+      const d = new Date(); d.setDate(d.getDate() + i);
       if (d.getDay() === 0 || d.getDay() === 6) continue;
       const data = d.toISOString().split("T")[0];
-      const slots = db.getAgendaMedico(medicoId, data);
-      const horasLivres = TODOS_SLOTS.filter(h => slots[h] === "livre");
-      if (horasLivres.length > 0) {
-        result.push({ data, dataFormatada: dataFormatada(data), horasLivres });
+      const { rows } = await pool.query(
+        "SELECT hora FROM agenda WHERE medico_id=$1 AND data=$2 AND estado='livre' ORDER BY hora",
+        [medicoId, data]
+      );
+      if (rows.length) {
+        result.push({ data, dataFormatada: dataFormatada(data), horasLivres: rows.map(r => r.hora) });
       }
       if (result.length >= 7) break;
     }
     return result;
   },
 
-  getVagasProximos7Dias(medicoId) {
+  async getVagasProximos7Dias(medicoId) {
     return db.getAgendaSemana(medicoId);
   },
 
   // ── Marcações ─────────────────────────────────────────────────────────────
-  getMarcacoes(data, limite) {
-    let m = state.marcacoes;
-    if (data) m = m.filter(x => x.data === data);
-    m = m.sort((a, b) => b.data.localeCompare(a.data) || b.hora.localeCompare(a.hora));
-    if (limite) m = m.slice(0, parseInt(limite));
-    return m;
+  async getMarcacoes(data, limite) {
+    let q = "SELECT * FROM marcacoes WHERE 1=1";
+    const vals = [];
+    if (data) { q += ` AND data=$${vals.length+1}`; vals.push(data); }
+    q += " ORDER BY data DESC, hora DESC";
+    if (limite) { q += ` LIMIT $${vals.length+1}`; vals.push(parseInt(limite)); }
+    const { rows } = await pool.query(q, vals);
+    return rows;
   },
 
-  getMarcacoesMedico(medicoId, data, limite) {
-    let m = state.marcacoes.filter(x => x.medicoId === medicoId);
-    if (data) m = m.filter(x => x.data === data);
-    m = m.sort((a, b) => b.data.localeCompare(a.data) || a.hora.localeCompare(b.hora));
-    if (limite) m = m.slice(0, parseInt(limite));
-    return m;
+  async getMarcacoesMedico(medicoId, data, limite) {
+    let q = "SELECT * FROM marcacoes WHERE medico_id=$1";
+    const vals = [medicoId];
+    if (data) { q += ` AND data=$${vals.length+1}`; vals.push(data); }
+    q += " ORDER BY data DESC, hora ASC";
+    if (limite) { q += ` LIMIT $${vals.length+1}`; vals.push(parseInt(limite)); }
+    const { rows } = await pool.query(q, vals);
+    return rows.map(r => ({ ...r, pacienteId: r.paciente_id, pacienteNome: r.paciente_nome, medicoId: r.medico_id, smsEnviado: r.sms_enviado, minutosAtraso: r.minutos_atraso }));
   },
 
-  getMarcacao(id) { return state.marcacoes.find(m => m.id === id); },
+  async getMarcacao(id) {
+    const { rows } = await pool.query("SELECT * FROM marcacoes WHERE id=$1", [id]);
+    if (!rows[0]) return null;
+    const r = rows[0];
+    return { ...r, pacienteId: r.paciente_id, pacienteNome: r.paciente_nome, medicoId: r.medico_id, smsEnviado: r.sms_enviado };
+  },
 
-  getMarcacoesParaSMS(diasAntes) {
-    const alvo = new Date();
-    alvo.setDate(alvo.getDate() + diasAntes);
-    const dataAlvo = alvo.toISOString().split("T")[0];
+  async getMarcacoesParaSMS(diasAntes) {
+    const alvo = new Date(); alvo.setDate(alvo.getDate() + diasAntes);
+    const data = alvo.toISOString().split("T")[0];
     const tag = `${diasAntes}d`;
-    return state.marcacoes.filter(m =>
-      m.data === dataAlvo &&
-      m.status === "pendente" &&
-      !(m.smsEnviado||[]).includes(tag)
+    const { rows } = await pool.query(
+      "SELECT * FROM marcacoes WHERE data=$1 AND status='pendente' AND NOT ($2 = ANY(sms_enviado))",
+      [data, tag]
+    );
+    return rows.map(r => ({ ...r, pacienteId: r.paciente_id, pacienteNome: r.paciente_nome, medicoId: r.medico_id }));
+  },
+
+  async criarMarcacao(dados) {
+    const id = uid("marc");
+    const { rows } = await pool.query(`
+      INSERT INTO marcacoes (id, medico_id, paciente_id, paciente_nome, telefone, data, hora, servico, status, idioma, origem, notas, call_sid)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+      [id, dados.medicoId, dados.pacienteId||null, dados.pacienteNome, dados.telefone||null,
+       dados.data, dados.hora, dados.servico||"Consulta rotina",
+       dados.status||"pendente", dados.idioma||"pt", dados.origem||"manual", dados.notas||"", dados.callSid||null]
+    );
+    await pool.query(
+      "UPDATE agenda SET estado='ocupado' WHERE medico_id=$1 AND data=$2 AND hora=$3",
+      [dados.medicoId, dados.data, dados.hora]
+    );
+    if (dados.pacienteId) {
+      await pool.query("UPDATE pacientes SET visitas=visitas+1 WHERE id=$1", [dados.pacienteId]);
+    }
+    const r = rows[0];
+    return { ...r, pacienteId: r.paciente_id, pacienteNome: r.paciente_nome, medicoId: r.medico_id };
+  },
+
+  async atualizarMarcacao(id, dados) {
+    const sets = []; const vals = []; let i = 1;
+    if (dados.status)      { sets.push(`status=$${i++}`);       vals.push(dados.status); }
+    if (dados.notas !== undefined) { sets.push(`notas=$${i++}`); vals.push(dados.notas); }
+    if (dados.minutosAtraso) { sets.push(`minutos_atraso=$${i++}`); vals.push(dados.minutosAtraso); }
+    if (!sets.length) return null;
+    vals.push(id);
+    const { rows } = await pool.query(`UPDATE marcacoes SET ${sets.join(",")} WHERE id=$${i} RETURNING *`, vals);
+    if (dados.status === "cancelada" && rows[0]) {
+      await pool.query(
+        "UPDATE agenda SET estado='livre' WHERE medico_id=$1 AND data=$2 AND hora=$3",
+        [rows[0].medico_id, rows[0].data, rows[0].hora]
+      );
+    }
+    const r = rows[0];
+    return r ? { ...r, pacienteId: r.paciente_id, pacienteNome: r.paciente_nome, medicoId: r.medico_id } : null;
+  },
+
+  async marcarSMSEnviado(id, tag) {
+    await pool.query(
+      "UPDATE marcacoes SET sms_enviado=array_append(sms_enviado,$1) WHERE id=$2",
+      [tag, id]
     );
   },
 
-  criarMarcacao(dados) {
-    const marc = {
-      id: uid("marc"),
-      status: "pendente",
-      smsEnviado: [],
-      origem: "manual",
-      criadoEm: new Date().toISOString(),
-      ...dados,
-    };
-    // Remove id se for undefined
-    if (!marc.id || marc.id === "marc_undefined") marc.id = uid("marc");
-
-    state.marcacoes.push(marc);
-
-    // Ocupar slot na agenda
-    const chave = `${marc.medicoId}_${marc.data}`;
-    if (!state.agenda[chave]) gerarAgendaMedico(marc.medicoId, marc.data);
-    state.agenda[chave][marc.hora] = "ocupado";
-
-    // Atualizar última consulta do paciente
-    if (marc.pacienteId) {
-      const i = state.pacientes.findIndex(p => p.id === marc.pacienteId);
-      if (i !== -1) state.pacientes[i].visitas = (state.pacientes[i].visitas || 0) + 1;
-    }
-
-    salvar();
-    return marc;
-  },
-
-  atualizarMarcacao(id, dados) {
-    const i = state.marcacoes.findIndex(m => m.id === id);
-    if (i === -1) return null;
-    const anterior = state.marcacoes[i];
-    state.marcacoes[i] = { ...anterior, ...dados };
-
-    // Libertar slot se cancelada
-    if (dados.status === "cancelada") {
-      const chave = `${anterior.medicoId}_${anterior.data}`;
-      if (state.agenda[chave]) state.agenda[chave][anterior.hora] = "livre";
-    }
-
-    salvar();
-    return state.marcacoes[i];
-  },
-
-  marcarSMSEnviado(id, tag) {
-    const m = state.marcacoes.find(x => x.id === id);
-    if (m) { m.smsEnviado = [...(m.smsEnviado||[]), tag]; salvar(); }
-  },
-
   // ── Folgas ────────────────────────────────────────────────────────────────
-  getFolgas(medicoId) {
-    let f = state.folgas;
-    if (medicoId) f = f.filter(x => x.medicoId === medicoId);
-    return f.sort((a, b) => b.inicio.localeCompare(a.inicio));
+  async getFolgas(medicoId) {
+    let q = "SELECT * FROM folgas WHERE 1=1";
+    const vals = [];
+    if (medicoId) { q += ` AND medico_id=$${vals.length+1}`; vals.push(medicoId); }
+    q += " ORDER BY inicio DESC";
+    const { rows } = await pool.query(q, vals);
+    return rows.map(r => ({ ...r, medicoId: r.medico_id }));
   },
 
-  criarFolga(dados) {
-    const folga = { id: uid("folga"), criadoEm: new Date().toISOString(), ...dados };
-    state.folgas.push(folga);
-
-    // Bloquear agenda nos dias da folga
-    const inicio = new Date(folga.inicio+"T00:00:00");
-    const fim    = new Date((folga.fim||folga.inicio)+"T00:00:00");
-    for (let d = new Date(inicio); d <= fim; d.setDate(d.getDate()+1)) {
+  async criarFolga(dados) {
+    const id = uid("folga");
+    const { rows } = await pool.query(`
+      INSERT INTO folgas (id, medico_id, inicio, fim, motivo, notas, registada_por)
+      VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [id, dados.medicoId, dados.inicio, dados.fim||dados.inicio, dados.motivo, dados.notas||"", dados.registadaPor||"medico"]
+    );
+    // Bloquear agenda
+    const ini = new Date(dados.inicio + "T00:00:00");
+    const fim = new Date((dados.fim||dados.inicio) + "T00:00:00");
+    for (let d = new Date(ini); d <= fim; d.setDate(d.getDate()+1)) {
       const data = d.toISOString().split("T")[0];
-      const chave = `${folga.medicoId}_${data}`;
-      if (!state.agenda[chave]) gerarAgendaMedico(folga.medicoId, data);
-      TODOS_SLOTS.forEach(h => { state.agenda[chave][h] = "folga"; });
+      await pool.query(
+        "UPDATE agenda SET estado='folga' WHERE medico_id=$1 AND data=$2",
+        [dados.medicoId, data]
+      );
     }
-
-    salvar();
-    return folga;
+    return { ...rows[0], medicoId: rows[0].medico_id };
   },
 
-  cancelarFolga(id) {
-    const i = state.folgas.findIndex(f => f.id === id);
-    if (i === -1) return false;
-    const folga = state.folgas[i];
-    state.folgas.splice(i, 1);
-
-    // Restaurar agenda
-    const inicio = new Date(folga.inicio+"T00:00:00");
-    const fim    = new Date((folga.fim||folga.inicio)+"T00:00:00");
-    for (let d = new Date(inicio); d <= fim; d.setDate(d.getDate()+1)) {
+  async cancelarFolga(id) {
+    const { rows } = await pool.query("SELECT * FROM folgas WHERE id=$1", [id]);
+    if (!rows[0]) return false;
+    const f = rows[0];
+    await pool.query("DELETE FROM folgas WHERE id=$1", [id]);
+    const ini = new Date(f.inicio + "T00:00:00");
+    const fim = new Date((f.fim||f.inicio) + "T00:00:00");
+    for (let d = new Date(ini); d <= fim; d.setDate(d.getDate()+1)) {
       const data = d.toISOString().split("T")[0];
-      const chave = `${folga.medicoId}_${data}`;
-      if (state.agenda[chave]) {
-        TODOS_SLOTS.forEach(h => {
-          if (state.agenda[chave][h] === "folga") state.agenda[chave][h] = "livre";
-        });
-        // Re-ocupar marcações existentes
-        state.marcacoes
-          .filter(m => m.medicoId === folga.medicoId && m.data === data && m.status !== "cancelada")
-          .forEach(m => { if (state.agenda[chave][m.hora] !== undefined) state.agenda[chave][m.hora] = "ocupado"; });
+      await pool.query("UPDATE agenda SET estado='livre' WHERE medico_id=$1 AND data=$2 AND estado='folga'", [f.medico_id, data]);
+      const { rows: marcs } = await pool.query("SELECT hora FROM marcacoes WHERE medico_id=$1 AND data=$2 AND status!='cancelada'", [f.medico_id, data]);
+      for (const m of marcs) {
+        await pool.query("UPDATE agenda SET estado='ocupado' WHERE medico_id=$1 AND data=$2 AND hora=$3", [f.medico_id, data, m.hora]);
       }
     }
-
-    salvar();
     return true;
   },
 
   // ── Notas ─────────────────────────────────────────────────────────────────
-  getNotaMedico(medicoId, data) {
-    return state.notas[`${medicoId}_${data}`] || "";
+  async getNotaMedico(medicoId, data) {
+    const { rows } = await pool.query("SELECT conteudo FROM notas WHERE medico_id=$1 AND data=$2", [medicoId, data]);
+    return rows[0]?.conteudo || "";
   },
 
-  guardarNotaMedico(medicoId, data, conteudo) {
-    state.notas[`${medicoId}_${data}`] = conteudo;
-    salvar();
+  async guardarNotaMedico(medicoId, data, conteudo) {
+    await pool.query(
+      "INSERT INTO notas (medico_id, data, conteudo) VALUES ($1,$2,$3) ON CONFLICT (medico_id, data) DO UPDATE SET conteudo=$3",
+      [medicoId, data, conteudo]
+    );
   },
 
-  // Para uso interno do SMS (vagas temporárias)
-  getNotasMedico(chave, campo) {
-    return state.notas[`${chave}_${campo}`] || "";
-  },
+  getNotasMedico(chave, campo) { return ""; },
 
   // ── Stats ─────────────────────────────────────────────────────────────────
-  getStats() {
+  async getStats() {
     const hoje = new Date().toISOString().split("T")[0];
-    const chamadasHoje = state.chamadas.filter(c => c.inicio?.startsWith(hoje)).length;
-    const marcacoesHoje = state.marcacoes.filter(m => m.data === hoje && m.origem === "ia").length;
-    const totalHoje = state.marcacoes.filter(m => m.data === hoje).length;
-    const taxa = totalHoje > 0 ? Math.round((marcacoesHoje / Math.max(chamadasHoje,1)) * 100) : 0;
+    const { rows: ch } = await pool.query("SELECT COUNT(*) FROM chamadas WHERE DATE(inicio)=CURRENT_DATE");
+    const { rows: mi } = await pool.query("SELECT COUNT(*) FROM marcacoes WHERE data=$1 AND origem='ia'", [hoje]);
+    const { rows: mt } = await pool.query("SELECT COUNT(*) FROM marcacoes WHERE data=$1", [hoje]);
+    const { rows: med } = await pool.query("SELECT COUNT(*) FROM medicos WHERE ativo=true");
+    const chamadasHoje = parseInt(ch[0].count);
+    const marcacoesIA = parseInt(mi[0].count);
+    const totalMarc   = parseInt(mt[0].count);
     return {
       chamadasHoje,
-      marcacoesHoje,
-      taxaConversao: Math.min(taxa, 100),
-      medicosAtivos: db.getMedicos().length,
+      marcacoesHoje: marcacoesIA,
+      taxaConversao: chamadasHoje > 0 ? Math.min(Math.round((marcacoesIA/chamadasHoje)*100),100) : 0,
+      medicosAtivos: parseInt(med[0].count),
     };
   },
 
-  getStatsMedico(medicoId, periodo="dia") {
+  async getStatsMedico(medicoId) {
     const hoje = new Date().toISOString().split("T")[0];
-    const marc = state.marcacoes.filter(m => m.medicoId === medicoId);
-    const hojeMarc = marc.filter(m => m.data === hoje);
+    const { rows: ag } = await pool.query(
+      "SELECT estado, COUNT(*) FROM agenda WHERE medico_id=$1 AND data=$2 GROUP BY estado", [medicoId, hoje]
+    );
+    const { rows: pacs } = await pool.query("SELECT COUNT(*) FROM pacientes WHERE medico_id=$1", [medicoId]);
+    const { rows: ia }   = await pool.query("SELECT COUNT(*) FROM marcacoes WHERE medico_id=$1 AND origem='ia'", [medicoId]);
+    const livres   = parseInt(ag.find(r=>r.estado==="livre")?.count||0);
+    const ocupados = parseInt(ag.find(r=>r.estado==="ocupado")?.count||0);
     return {
-      consultasHoje: hojeMarc.filter(m => m.status !== "cancelada").length,
-      realizadas: hojeMarc.filter(m => m.status === "realizada").length,
-      pendentes: hojeMarc.filter(m => m.status === "pendente").length,
-      slotsLivres: Object.values(state.agenda[`${medicoId}_${hoje}`]||{}).filter(v=>v==="livre").length,
-      pacientesTotal: state.pacientes.filter(p => p.medicoId === medicoId).length,
-      marcacoesIA: marc.filter(m => m.origem === "ia").length,
+      consultasHoje: ocupados,
+      realizadas: 0,
+      pendentes: ocupados,
+      slotsLivres: livres,
+      pacientesTotal: parseInt(pacs[0].count),
+      marcacoesIA: parseInt(ia[0].count),
     };
   },
 
   // ── Notificações ──────────────────────────────────────────────────────────
-  getNotificacoes() {
-    return [...state.notificacoes]
-      .sort((a, b) => Number(!a.lida) - Number(!b.lida) || b.criadoEm?.localeCompare(a.criadoEm||""));
+  async getNotificacoes() {
+    const { rows } = await pool.query(
+      "SELECT * FROM notificacoes ORDER BY lida ASC, criado_em DESC LIMIT 100"
+    );
+    return rows.map(r => ({ ...r, medicoNome: r.medico_nome, paraMediacoId: r.para_medico_id }));
   },
 
-  criarNotificacao(dados) {
-    const n = { id: uid("notif"), lida:false, criadoEm: new Date().toISOString(), ...dados };
-    state.notificacoes.unshift(n);
-    // Mantém max 200 notificações
-    if (state.notificacoes.length > 200) state.notificacoes = state.notificacoes.slice(0, 200);
-    salvar();
-    return n;
+  async criarNotificacao(dados) {
+    const id = uid("notif");
+    const { rows } = await pool.query(`
+      INSERT INTO notificacoes (id, tipo, urgencia, medico_nome, para_medico_id, msg)
+      VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [id, dados.tipo, dados.urgencia||"baixa", dados.medicoNome||null, dados.paraMediacoId||null, dados.msg]
+    );
+    return rows[0];
   },
 
-  marcarNotificacaoLida(id) {
-    const n = state.notificacoes.find(x => x.id === id);
-    if (n) { n.lida = true; salvar(); }
-    return n;
+  async marcarNotificacaoLida(id) {
+    const { rows } = await pool.query("UPDATE notificacoes SET lida=true WHERE id=$1 RETURNING *", [id]);
+    return rows[0] || null;
   },
 
-  marcarTodasLidas() {
-    state.notificacoes.forEach(n => { n.lida = true; });
-    salvar();
+  async marcarTodasLidas() {
+    await pool.query("UPDATE notificacoes SET lida=true");
   },
 
   // ── Chamadas ──────────────────────────────────────────────────────────────
-  getChamadas() { return [...state.chamadas].reverse(); },
-
-  registarChamada(dados) {
-    const c = { id: uid("call"), status:"iniciada", duracao:0, ...dados };
-    state.chamadas.unshift(c);
-    if (state.chamadas.length > 1000) state.chamadas = state.chamadas.slice(0, 1000);
-    salvar();
-    return c;
+  async getChamadas() {
+    const { rows } = await pool.query("SELECT * FROM chamadas ORDER BY inicio DESC LIMIT 100");
+    return rows;
   },
 
-  atualizarStatusChamada(callSid, status, duracao) {
-    const c = state.chamadas.find(x => x.callSid === callSid);
-    if (c) { c.status = status; c.duracao = duracao; c.fim = new Date().toISOString(); salvar(); }
+  async registarChamada(dados) {
+    const id = uid("call");
+    await pool.query(`
+      INSERT INTO chamadas (id, call_sid, "from", tipo, status, inicio)
+      VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (call_sid) DO NOTHING`,
+      [id, dados.callSid, dados.from, dados.tipo, "iniciada", dados.inicio]
+    );
+    return { id, ...dados };
   },
 
-  encerrarChamada(callSid) {
-    db.atualizarStatusChamada(callSid, "concluida", 0);
+  async atualizarStatusChamada(callSid, status, duracao) {
+    await pool.query(
+      `UPDATE chamadas SET status=$1, duracao=$2, fim=NOW() WHERE call_sid=$3`,
+      [status, duracao, callSid]
+    );
   },
 
-  // ── Sessões (em memória, não persistido) ──────────────────────────────────
-  getSessao(callSid) { return state.sessoes[callSid] || null; },
-  setSessao(callSid, dados) { state.sessoes[callSid] = dados; },
-  limparSessao(callSid) { delete state.sessoes[callSid]; },
+  encerrarChamada(callSid) { return db.atualizarStatusChamada(callSid, "concluida", 0); },
+
+  // ── Sessões (memória) ─────────────────────────────────────────────────────
+  getSessao(callSid)        { return sessoes[callSid] || null; },
+  setSessao(callSid, dados) { sessoes[callSid] = dados; },
+  limparSessao(callSid)     { delete sessoes[callSid]; },
 
   // ── Campanhas ─────────────────────────────────────────────────────────────
-  criarCampanha(dados) {
-    const c = { criadoEm: new Date().toISOString(), contatados:0, ...dados };
-    state.campanhas.push(c);
-    salvar();
-    return c;
+  async criarCampanha(dados) {
+    const { rows } = await pool.query(`
+      INSERT INTO campanhas (id, promocao, total, idioma, medico_id, tipo)
+      VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [dados.id, dados.promocao, dados.total, dados.idioma, dados.medicoId||null, dados.tipo]
+    );
+    return rows[0];
   },
 };
 
-// Init automático ao importar
 await init();
